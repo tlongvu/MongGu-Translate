@@ -1,6 +1,6 @@
 """
 Monggu Translate - Pass 3: Render Video (GPU Accelerated)
-Load ocr_data.json + translation_map.json → inpaint + draw tiếng Việt → xuất video
+Load jobs/<tên>/ocr_data.json + lines.json → inpaint + draw tiếng Việt (theo từng lần xuất hiện) → xuất video
 Sử dụng NVENC (encode), NVDEC (decode), PyTorch CUDA (resize/blur/cvtColor)
 
 Usage:
@@ -621,7 +621,7 @@ def merge_nearby_detections(detections, y_threshold=5, x_gap_threshold=80):
 
 def _build_segment_index(text_segments: list, start_frame: int, end_frame: int,
                           translation_map: dict, extend_frames: int = 5,
-                          ocr_interval_frames: int = 0) -> dict:
+                          ocr_interval_frames: int = 0, vi_for_seg: dict = None) -> dict:
     """
     Build frame→[{bbox, text, vi_text, box_height}] index từ text_segments.
     Mỗi frame nhận bbox được interpolate tuyến tính từ keyframe_bboxes.
@@ -686,7 +686,8 @@ def _build_segment_index(text_segments: list, start_frame: int, end_frame: int,
             continue
 
         zh_text = seg['text']
-        vi_text = translation_map.get(zh_text, "")
+        # Bản dịch theo TỪNG LẦN XUẤT HIỆN (id segment); không có id → tra theo chữ (tương thích)
+        vi_text = (vi_for_seg or {}).get(seg.get('id'), translation_map.get(zh_text, ""))
         keyframe_bboxes = seg.get('keyframe_bboxes', [])
 
         for fn in range(max(sf, start_frame), min(ef + 1, end_frame)):
@@ -749,7 +750,7 @@ def process_chunk(args):
      video_path, temp_output, font_path,
      fps, width, height,
      ocr_interval_frames, translation_map,
-     frame_detections_for_chunk, text_segments_for_chunk) = args
+     frame_detections_for_chunk, text_segments_for_chunk, vi_for_seg) = args
 
     gpu_mode = USE_GPU and USE_NVENC
     print(f"  [Worker {chunk_idx}] Render {'(GPU+NVENC) ' if gpu_mode else ''}{'(Pass Mode) ' if TIKTOK_PASS_MODE else ''}frames {start_frame}-{end_frame}...")
@@ -800,7 +801,7 @@ def process_chunk(args):
     # tránh text Trung nhấp nháy trước khi inpaint kịp bắt đầu.
     segment_index = _build_segment_index(
         text_segments_for_chunk, start_frame, end_frame, translation_map,
-        ocr_interval_frames=ocr_interval_frames,
+        ocr_interval_frames=ocr_interval_frames, vi_for_seg=vi_for_seg,
     )
 
     # Fallback: keyframe-based lookup (cho các frame không có segment)
@@ -1152,7 +1153,7 @@ if __name__ == "__main__":
     if not os.path.exists(job.ocr_data):
         print(f"  [ERROR] Chưa có OCR cho {job.name} — hãy chạy: python ocr_pass.py --input \"{args.input}\"")
         sys.exit(1)
-    if not os.path.exists(job.translation_map):
+    if not os.path.exists(job.lines):
         print(f"  [ERROR] Chưa có bản dịch cho {job.name} — hãy chạy: python translate_pass.py --input \"{args.input}\"")
         sys.exit(1)
 
@@ -1162,11 +1163,22 @@ if __name__ == "__main__":
         print("  [ERROR] OCR của video này chưa chạy xong (bị ngắt?) — chạy tiếp OCR rồi dịch lại.")
         sys.exit(1)
 
-    with open(job.translation_map, "r", encoding="utf-8") as f:
-        translation_map = json.load(f)
+    with open(job.lines, "r", encoding="utf-8") as f:
+        lines = json.load(f)
 
     frame_detections = ocr_data["frame_detections"]
     text_segments = ocr_data.get("text_segments", [])  # Có thể thiếu nếu ocr_data cũ
+
+    # Bản dịch theo TỪNG LẦN XUẤT HIỆN: id segment → vi_sua (sửa tay) hoặc vi.
+    # translation_map (chữ OCR thô → bản dịch lần xuất hiện đầu) chỉ dùng cho chữ thô không thuộc segment nào.
+    for i, seg in enumerate(text_segments):
+        seg["id"] = i
+    vi_for_seg, translation_map = {}, {}
+    for l in sorted(lines, key=lambda l: l["start"]):
+        vi = l.get("vi_sua") or l.get("vi") or ""
+        vi_for_seg[l["id"]] = vi
+        if l["id"] < len(text_segments):
+            translation_map.setdefault(text_segments[l["id"]]["text"], vi)
     fps = ocr_data["fps"]
     width = ocr_data["width"]
     height = ocr_data["height"]
@@ -1181,7 +1193,7 @@ if __name__ == "__main__":
     print(f"  Text segments  : {len(text_segments)} tracked appearances")
     if not text_segments:
         print(f"  [WARN] Không có text_segments! Hãy chạy lại ocr_pass.py để tái tạo.")
-    print(f"  Translations   : {len(translation_map)} entries")
+    print(f"  Translations   : {len(lines)} dòng (lines.json)")
     print(f"  Video          : {width}x{height} @ {fps:.1f}fps, {total_frames} frames")
 
     # ── Analyze video (get path) ──
@@ -1263,7 +1275,7 @@ if __name__ == "__main__":
          video_path, temp_files[i],
          FONT_PATH, fps, width, height,
          ocr_interval_frames, translation_map,
-         chunk_detections[i], chunk_segments[i])
+         chunk_detections[i], chunk_segments[i], vi_for_seg)
         for i in range(num_workers)
     ]
 

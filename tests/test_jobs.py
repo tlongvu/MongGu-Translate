@@ -41,7 +41,8 @@ def test_open_job_create_and_reopen():
         assert j.dir == os.path.join(jobs.JOBS_DIR, "tap1")
         assert j.ocr_data == os.path.join(j.dir, "ocr_data.json")
         assert j.output == os.path.join(j.dir, "tap1_vi.mp4")
-        assert os.path.dirname(j.profiles) == j.dir, "Video lẻ: hồ sơ nằm trong job"
+        assert j.story == os.path.join(j.dir, "story.json"), "Video lẻ: hồ sơ truyện nằm trong job"
+        assert j.lines == os.path.join(j.dir, "lines.json")
         assert jobs.open_job(v).dir == j.dir, "Mở lại cùng video → cùng job"
     finally:
         shutil.rmtree(d, ignore_errors=True)
@@ -65,7 +66,7 @@ def test_series_shares_profiles_between_episodes():
     try:
         j1 = jobs.open_job(_video(d, "a", "daosiep1.mp4", b"ep1"), series="daosi", create=True)
         j2 = jobs.open_job(_video(d, "a", "daosiep2.mp4", b"ep2"), series="daosi", create=True)
-        assert j1.profiles == j2.profiles == os.path.join(jobs.SERIES_DIR, "daosi", "character_profiles.json")
+        assert j1.story == j2.story == os.path.join(jobs.SERIES_DIR, "daosi", "story.json")
         assert jobs.open_job(os.path.join(d, "a", "daosiep1.mp4")).series == "daosi", "Series được nhớ trong job.json"
     finally:
         shutil.rmtree(d, ignore_errors=True)

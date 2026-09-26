@@ -91,7 +91,7 @@ def main():
                 if json.load(f).get("complete", True):
                     print("  [SKIP] OCR đã xong cho video này → bỏ qua OCR")
                     run_ocr = False
-        if run_tr and os.path.exists(job.translation_map):
+        if run_tr and os.path.exists(job.lines):
             print("  [SKIP] Đã có bản dịch cho video này → bỏ qua dịch")
             run_tr = False
 

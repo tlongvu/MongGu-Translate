@@ -1,10 +1,15 @@
 """
-Monggu Translate - Pass 2: Dịch theo ngữ cảnh kịch bản
-Load ocr_data.json → chuẩn hóa chữ OCR → dịch theo kịch bản (Phase 1-4) → xuất translation_map.json
+Monggu Translate - Pass 2: Dịch theo cốt truyện, đúng nhân vật
+jobs/<tên>/ocr_data.json → chuẩn hóa chữ OCR → hồ sơ truyện (story.json) → người nói / người nghe từng câu
+→ dịch TỪNG LẦN XUẤT HIỆN, xưng hô tra bảng theo cặp → rà soát → jobs/<tên>/lines.json
 Mọi lời gọi LLM qua llm.ask_json (Gemini, dự phòng DeepSeek; có cache → chạy lại không tốn lại).
 
 Usage:
-    python translate_pass.py
+    python translate_pass.py --input video.mp4
+
+Sửa tay rồi chạy lại (cache → chỉ phần liên quan bị gọi lại LLM):
+  - story.json: nhân vật, bảng xưng hô "A>B" / "A>*", tên riêng
+  - lines.json: "noi"/"nghe" của một dòng (người nói sai), hoặc "vi_sua" (bản dịch sửa tay, render ưu tiên)
 """
 
 import sys
@@ -15,31 +20,70 @@ if hasattr(sys.stdout, 'reconfigure'):
 if hasattr(sys.stderr, 'reconfigure'):
     sys.stderr.reconfigure(encoding='utf-8')
 
+import argparse
 import json
 import os
-import re
 import time
-import argparse
-from difflib import get_close_matches
 
-from config import (
-    TRANSLATION_GENRE, TRANSLATION_SYSTEM_PROMPT,
-    NORMALIZATION_SYSTEM_PROMPT, VIDEO_PATH,
-)
+from config import NORMALIZATION_SYSTEM_PROMPT, VIDEO_PATH
 from jobs import open_job, JobError
 from llm import ask_json, LLMError
 from utils import write_json_atomic
 
+LABEL_MIN_SEC, LABEL_MAX_LEN = 3.0, 8        # chữ hiện ≥3s và ≤8 ký tự → ứng viên nhãn tên / tiêu đề
+MAX_LABEL_CANDIDATES = 60
+SPEAKER_WINDOW, SPEAKER_CONTEXT = 200, 20
+TRANSLATE_WINDOW, TRANSLATE_CONTEXT = 120, 15
+QA_WINDOW = 150
 
-def load_glossary(path: str) -> dict:
-    """Load bảng glossary tên riêng của video/series này."""
-    if os.path.exists(path):
-        with open(path, "r", encoding="utf-8") as f:
-            glossary = json.load(f)
-        print(f"  Loaded glossary: {len(glossary)} entries")
-        return glossary
-    print("  (Chưa có glossary riêng cho video/series này)")
-    return {}
+STORY_SYS = """Bạn là biên tập viên phim Trung Quốc, lập HỒ SƠ TRUYỆN để dịch phụ đề sang tiếng Việt cho đúng nhân vật.
+Tôi đưa: (1) HỒ SƠ ĐÃ CÓ của bộ phim (có thể rỗng) — GIỮ NGUYÊN mọi id và nội dung, chỉ bổ sung cái mới;
+(2) CHỮ HIỆN LÂU trên màn hình — thường là NHÃN TÊN gắn cạnh nhân vật, hoặc tiêu đề / địa danh / watermark;
+(3) LỜI THOẠI của video theo thứ tự thời gian.
+
+Trả về DUY NHẤT một JSON object:
+{
+  "tom_tat": "tóm tắt cốt truyện 3-6 câu",
+  "the_loai": "vd: tu tiên hài, ngôn tình hiện đại, cổ trang cung đấu",
+  "nhan_vat": {"<id>": {"ten": "tên tiếng Việt (Hán Việt)", "ten_goc": ["các cách gọi tiếng Trung"], "gioi_tinh": "nam|nữ|?", "vai": "vai trò, quan hệ với nhân vật khác"}},
+  "xung_ho": {"<idA>><idB>": {"xung": "A tự xưng", "goi": "A gọi B"}, "<idA>>*": {"xung": "...", "goi": "..."}},
+  "ten_rieng": {"<tiếng Trung>": "<tiếng Việt>"},
+  "nhan": {"<chữ hiện lâu>": "<id nhân vật>"}
+}
+
+Quy tắc:
+- id: chữ thường không dấu nối bằng "_" (vd "tieu_thu", "bach_lang"). Người kể chuyện xưng "我" cũng là một nhân vật.
+- xung_ho: cho MỌI cặp thực sự nói chuyện với nhau, theo lối xưng hô tiếng Việt hợp thể loại và quan hệ (cổ trang / tu tiên: ta–ngươi, huynh–muội, sư phụ–đồ nhi, bản tiểu thư, nô tỳ…; hiện đại: tôi–cậu, anh–em, bố/mẹ–con, chị–em…). Thêm "<id>>*" = cách xưng mặc định khi nói với nhiều người hoặc tự nói.
+- nhan: chỉ ghi những chữ hiện lâu là NHÃN TÊN của một nhân vật (không ghi tiêu đề, địa danh, watermark).
+- ten_rieng: tên người, môn phái, địa danh, pháp bảo… (dùng Hán Việt).
+KHÔNG giải thích."""
+
+SPEAKER_SYS = """Bạn xác định AI NÓI và NÓI VỚI AI cho từng dòng phụ đề phim Trung Quốc.
+Căn cứ: hồ sơ truyện, mạch hội thoại (ai hỏi – ai đáp), và gợi ý "(Trên màn hình: ...)" = các nhân vật có nhãn tên đang hiện khi dòng đó xuất hiện.
+Dòng đã có "(A→B)" là đã xác định — chỉ để tham khảo.
+Trả về DUY NHẤT một JSON object cho các dòng CHƯA có (A→B):
+{"<id dòng>": {"noi": "<id nhân vật hoặc ?>", "nghe": "<id nhân vật, * nếu nói với nhiều người/tự nói/kể chuyện, ? nếu không rõ>", "chac": <độ chắc chắn 0..1>}}
+Chỉ dùng id có trong danh sách nhân vật. Lời dẫn của người kể chuyện: noi = id người kể, nghe = "*". Chữ không phải lời thoại (tiêu đề, chú thích, bảng hiệu): noi = "?".
+KHÔNG giải thích."""
+
+TRANSLATE_SYS = """Bạn là dịch giả phụ đề phim Trung Quốc sang tiếng Việt.
+Mỗi dòng cần dịch có dạng [id] (A→B) câu tiếng Trung: A là người nói, B là người nghe (* = nhiều người / tự nói, ? = không rõ).
+Quy tắc:
+1. Dùng ĐÚNG xưng hô trong bảng XƯNG HÔ cho cặp A→B; cặp không có trong bảng thì dùng cách xưng mặc định của A (A→*); vẫn không có thì suy từ hồ sơ và mạch truyện.
+2. Giữ đúng tên riêng theo bảng TÊN RIÊNG.
+3. Dịch theo MẠCH TRUYỆN (tóm tắt + NGỮ CẢNH TRƯỚC ĐÓ): hiểu đúng ẩn ý, chơi chữ, câu nói cụt; dịch tự nhiên, ngắn gọn như phụ đề, không thêm thắt.
+4. Các dòng NGỮ CẢNH TRƯỚC ĐÓ chỉ để giữ mạch — KHÔNG dịch.
+Trả về DUY NHẤT một JSON object {"<id>": "<câu tiếng Việt>"} cho MỌI dòng CẦN DỊCH. KHÔNG giải thích."""
+
+LABEL_SYS = """Bạn dịch NHÃN TÊN hiện trên màn hình phim Trung Quốc (chữ gắn cạnh nhân vật) sang tiếng Việt.
+Mỗi dòng: [id] nhãn tiếng Trung (nhãn của: tên nhân vật trong hồ sơ, nếu biết).
+Tên người / nơi dùng Hán Việt; giữ phần chú thích (vd "宛雪（女主）" → "Uyển Tuyết (nữ chính)"); "我" → "Tôi".
+Trả về DUY NHẤT một JSON object {"<id>": "<nhãn tiếng Việt>"} cho MỌI dòng. KHÔNG giải thích."""
+
+QA_SYS = """Bạn là biên tập viên phụ đề tiếng Việt cho phim Trung Quốc.
+Mỗi dòng: [id] A→B | tiếng Trung | tiếng Việt (A nói với B).
+Soát các lỗi: (1) xưng hô sai so với bảng XƯNG HÔ của cặp A→B; (2) nhầm chủ ngữ (tôi/anh/nó…); (3) sai ý so với mạch truyện và tóm tắt.
+Trả về DUY NHẤT một JSON object CHỈ gồm các dòng CẦN SỬA: {"<id>": "<câu đã sửa>"}; không dòng nào sai thì {}. KHÔNG giải thích."""
 
 
 def load_ocr_data(path: str) -> dict:
@@ -48,19 +92,17 @@ def load_ocr_data(path: str) -> dict:
         print(f"  [ERROR] Không tìm thấy {path}")
         print(f"  Hãy chạy ocr_pass.py trước!")
         return None
-
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
     print(f"  Loaded OCR data: {len(data.get('unique_texts', []))} unique texts")
     return data
 
 
-def format_glossary_for_prompt(glossary: dict) -> str:
-    """Format glossary thành chuỗi đẹp cho prompt."""
-    if not glossary:
-        return "(Không có)"
-    lines = [f"  {zh} → {vi}" for zh, vi in glossary.items()]
-    return "\n".join(lines)
+def _load_json(path: str, default):
+    if os.path.exists(path):
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    return default
 
 
 def normalize_texts(unique_texts: list, batch_size: int = 150) -> dict:
@@ -79,289 +121,284 @@ def normalize_texts(unique_texts: list, batch_size: int = 150) -> dict:
     return mapping
 
 
-# ──────────────────────────────────────────────
-# CONTEXTUAL TRANSLATION (Phase 1-4): dịch theo ngữ cảnh kịch bản
-#   Phase 1: dịch cả transcript theo thứ tự thời gian, có ngữ cảnh
-#   Phase 2: gán người nói (speaker attribution) từ nhãn tên nhân vật
-#   Phase 3: hồ sơ nhân vật (giới tính/vai vế/xưng hô) tự suy luận
-#   Phase 4: pass QA rà soát nhất quán chủ ngữ/xưng hô
-# ──────────────────────────────────────────────
+# ── Dòng theo từng lần xuất hiện ──
 
-
-_PROFILE_SYS = (
-    "Bạn là trợ lý phân tích nhân vật phim Trung Quốc. "
-    "Tôi cung cấp các câu thoại theo thứ tự thời gian (kèm vài tên đã biết để tham khảo). "
-    "Hãy TỰ NHẬN DIỆN các nhân vật chính và suy luận hồ sơ từng người từ ngữ cảnh hội thoại. "
-    "Trả về DUY NHẤT một JSON object: key = tên (tiếng Việt nếu suy ra được, không thì để tiếng Trung), "
-    'value = {"gender":"nam|nữ|?","role":"vai trò/quan hệ ngắn gọn","xung_ho":"cách tự xưng và gọi người khác"}. '
-    "Chỉ liệt kê nhân vật thực sự (bỏ qua rác OCR). Nếu không chắc dùng '?'. KHÔNG giải thích, CHỈ JSON."
-)
-
-_QA_SYS = (
-    "Bạn là biên tập viên phụ đề tiếng Việt cho phim Trung Quốc. "
-    "Tôi đưa kịch bản đã dịch (mỗi dòng: số | người nói | tiếng Trung | tiếng Việt) kèm hồ sơ nhân vật. "
-    "Hãy SOÁT các dòng bị SAI chủ ngữ / xưng hô / nhầm người nói so với ngữ cảnh hội thoại và hồ sơ nhân vật "
-    "(tiếng Trung hay lược bỏ chủ ngữ nên dễ dịch nhầm 'tôi/anh/nó'). "
-    "Trả về DUY NHẤT một JSON object CHỈ gồm các dòng CẦN SỬA: key = số dòng, value = câu tiếng Việt đã sửa. "
-    "Nếu không dòng nào sai, trả về {}. KHÔNG giải thích."
-)
-
-
-def _is_name_label(cleaned: str, glossary: dict) -> bool:
-    """NHÃN TÊN nhân vật — chỉ tin glossary (chính xác cao, tránh nhận nhầm verb/rác OCR)."""
-    c = (cleaned or "").strip()
-    if not c:
-        return False
-    return c in glossary or c in glossary.values()
-
-
-def build_ordered_transcript(text_segments: list, normalized_mapping: dict, glossary: dict) -> list:
-    """
-    Phase 1+2: dựng transcript theo thứ tự thời gian, DEDUP theo lần xuất hiện đầu
-    (mỗi câu unique 1 dòng) để giữ ngữ cảnh mà không phí API cho text lặp lại.
-    Mỗi item: {idx, raw, cleaned, start, end, is_label, onscreen, speaker}.
-    """
-    raw_items = []
-    for seg in text_segments:
-        raw = seg.get("text", "")
-        cleaned = normalized_mapping.get(raw, raw)
-        if not cleaned:  # bị lọc thành rác
-            continue
-        raw_items.append({
-            "raw": raw,
-            "cleaned": cleaned,
-            "start": int(seg.get("start_frame", 0)),
-            "end": int(seg.get("end_frame", seg.get("start_frame", 0))),
-            "is_label": _is_name_label(cleaned, glossary),
-        })
-    raw_items.sort(key=lambda it: (it["start"], it["end"]))
-
-    # Cửa sổ thời gian của các nhãn tên (dùng cho speaker attribution, lấy từ TOÀN BỘ segment)
-    labels = [it for it in raw_items if it["is_label"]]
-
-    # Dedup theo cleaned, giữ lần xuất hiện ĐẦU (thứ tự thời gian)
-    seen, transcript = set(), []
-    for it in raw_items:
-        if it["cleaned"] in seen:
-            continue
-        seen.add(it["cleaned"])
-        transcript.append(it)
-
-    for i, it in enumerate(transcript):
-        it["idx"] = i + 1
-        if it["is_label"]:
-            it["onscreen"], it["speaker"] = [], None
-            continue
-        onscreen = []
-        for lb in labels:
-            if lb["start"] <= it["end"] and it["start"] <= lb["end"]:  # giao thời gian
-                name = glossary.get(lb["cleaned"], lb["cleaned"])
-                if name not in onscreen:
-                    onscreen.append(name)
-        it["onscreen"] = onscreen
-        it["speaker"] = onscreen[0] if len(onscreen) == 1 else None  # chỉ chắc khi đúng 1
-    return transcript
-
-
-def infer_character_profiles(transcript: list, glossary: dict, profiles_path: str) -> dict:
-    """Phase 3: suy luận hồ sơ nhân vật từ THOẠI (không phụ thuộc nhãn). Lưu file tái dùng."""
-    sample = [f"[{it['idx']}] {it['cleaned']}" for it in transcript[:90]]
-    known = sorted(set(list(glossary.values())))
-    user = ("TÊN ĐÃ BIẾT (tham khảo, có thể không đủ):\n" + json.dumps(known, ensure_ascii=False)
-            + "\n\nCÂU THOẠI THEO THỨ TỰ (hãy tự nhận diện nhân vật chính từ đây):\n"
-            + "\n".join(sample))
-    try:
-        profiles = ask_json(_PROFILE_SYS, user, temperature=0.0)
-    except LLMError as e:
-        print(f"  [Phase 3][WARN] Suy luận hồ sơ nhân vật lỗi: {e}")
-        return {}
-    if not isinstance(profiles, dict):
-        return {}
-
-    # Trộn với hồ sơ đã có của video/series này (ưu tiên bản người dùng đã chỉnh)
-    existing = {}
-    if os.path.exists(profiles_path):
-        try:
-            existing = json.load(open(profiles_path, encoding="utf-8"))
-        except Exception:
-            existing = {}
-    merged = {**profiles, **existing}
-    try:
-        write_json_atomic(profiles_path, merged)
-        print(f"  [Phase 3] Hồ sơ nhân vật: {len(merged)} người -> {profiles_path}")
-    except Exception as e:
-        print(f"  [Phase 3][WARN] Không lưu được hồ sơ: {e}")
-    return merged
-
-
-def _format_profiles(profiles: dict) -> str:
-    if not profiles:
-        return "(Không có)"
+def build_lines(text_segments: list, normalized: dict, old_lines: list) -> list:
+    """Mỗi segment một dòng (id = chỉ số segment), sắp theo thời gian.
+    Giữ noi/nghe/chac/vi_sua của lines.json cũ nếu cùng id VÀ cùng chữ (OCR chạy lại thì id đổi → bỏ)."""
+    old = {l.get("id"): l for l in old_lines or []}
     lines = []
-    for name, info in profiles.items():
-        if isinstance(info, dict):
-            g = info.get("gender", "?"); r = info.get("role", "?"); x = info.get("xung_ho", "")
-            lines.append(f"  - {name}: giới tính={g}, vai={r}" + (f", xưng hô: {x}" if x else ""))
-        else:
-            lines.append(f"  - {name}: {info}")
-    return "\n".join(lines)
+    for i, seg in enumerate(text_segments):
+        raw = seg.get("text", "")
+        zh = normalized.get(raw, raw)
+        line = {"id": i, "start": int(seg.get("start_frame", 0)),
+                "end": int(seg.get("end_frame", seg.get("start_frame", 0))),
+                "zh": zh, "loai": "thoai" if zh else "rac"}
+        prev = old.get(i)
+        if prev and prev.get("zh") == zh:
+            for k in ("noi", "nghe", "chac", "vi_sua"):
+                if k in prev:
+                    line[k] = prev[k]
+        lines.append(line)
+    lines.sort(key=lambda l: (l["start"], l["end"], l["id"]))
+    return lines
 
 
-def _line_tag(it: dict) -> str:
-    if it["is_label"]:
-        return "(Nhãn tên) "
-    if it.get("speaker"):
-        return f"(Người nói: {it['speaker']}) "
-    if it.get("onscreen"):
-        return f"(Trên màn hình: {', '.join(it['onscreen'])}) "
-    return ""
+def long_lived_texts(lines: list, fps: float) -> list:
+    """Chữ hiện lâu (tổng ≥ LABEL_MIN_SEC giây, ≤ LABEL_MAX_LEN ký tự): ứng viên nhãn tên / tiêu đề, lâu nhất trước."""
+    total = {}
+    for l in lines:
+        if l["zh"] and len(l["zh"]) <= LABEL_MAX_LEN:
+            total[l["zh"]] = total.get(l["zh"], 0.0) + (l["end"] - l["start"] + 1) / fps
+    ranked = sorted(total.items(), key=lambda kv: -kv[1])
+    return [t for t, sec in ranked if sec >= LABEL_MIN_SEC][:MAX_LABEL_CANDIDATES]
 
 
-def translate_script(transcript: list, profiles: dict, glossary: dict,
-                     window: int = 120, overlap: int = 15) -> dict:
-    """
-    Phase 1: dịch cả kịch bản theo NGỮ CẢNH. Chia cửa sổ có gối đầu để giữ mạch
-    hội thoại cho video dài. Trả về {idx: vi}.
-    """
-    glossary_str = format_glossary_for_prompt(glossary)
-    base_sys = TRANSLATION_SYSTEM_PROMPT.format(genre=TRANSLATION_GENRE, glossary=glossary_str)
-    sys_prompt = (
-        base_sys
-        + "\n\nHỒ SƠ NHÂN VẬT (dùng để xưng hô đúng & nhất quán):\n" + _format_profiles(profiles)
-        + "\n\nQUAN TRỌNG:\n"
-        "- Mỗi dòng được đánh số [n] và có thể kèm gợi ý '(Người nói: X)' hoặc '(Trên màn hình: ...)'.\n"
-        "- Tiếng Trung hay LƯỢC BỎ chủ ngữ. Hãy dựa vào MẠCH hội thoại liên tiếp + gợi ý người nói "
-        "để xác định ĐÚNG chủ ngữ và xưng hô tiếng Việt.\n"
-        "- Giữ xưng hô NHẤT QUÁN xuyên suốt theo hồ sơ nhân vật.\n"
-        "- Trả về DUY NHẤT một JSON object: key = số dòng (trong []), value = câu tiếng Việt. KHÔNG giải thích."
-    )
+# ── Bước 1: hồ sơ truyện ──
 
-    vi_by_idx = {}
-    n = len(transcript)
-    step = max(1, window - overlap)
-    for start in range(0, n, step):
-        chunk = transcript[start:start + window]
-        if not chunk:
-            break
-        user = "\n".join(f"[{it['idx']}] {_line_tag(it)}{it['cleaned']}" for it in chunk)
-        _take_translations(ask_json(sys_prompt, user, temperature=0.1), chunk, vi_by_idx)
-        missing = [it for it in chunk if it["idx"] not in vi_by_idx]
-        if missing:
-            # Hỏi lại riêng các dòng thiếu (prompt khác → khóa cache khác), vẫn kèm cả cửa sổ làm ngữ cảnh
-            ids = ", ".join(str(it["idx"]) for it in missing)
-            _take_translations(ask_json(sys_prompt, user + f"\n\nCHỈ dịch các dòng: {ids}", temperature=0.1),
-                               missing, vi_by_idx)
-        if start + window >= n:
-            break
-    missing = [it["idx"] for it in transcript if it["idx"] not in vi_by_idx]
-    if missing:
-        raise LLMError(f"Model bỏ sót {len(missing)} dòng kể cả khi hỏi lại: {missing[:20]}")
-    return vi_by_idx
+def merge_story(old: dict, new: dict) -> dict:
+    """Trộn hồ sơ: GIỮ NGUYÊN mọi thứ đã có (người dùng có thể đã sửa), chỉ thêm khóa mới."""
+    # ponytail: tom_tat của series giữ bản đầu tiên; cần tóm tắt từng tập thì thêm "tom_tat_tap" trong job
+    out = {k: (dict(v) if isinstance(v, dict) else v) for k, v in old.items()}
+    for key in ("tom_tat", "the_loai"):
+        if not out.get(key) and isinstance(new.get(key), str):
+            out[key] = new[key]
+    for key in ("nhan_vat", "xung_ho", "ten_rieng", "nhan"):
+        cur = out.setdefault(key, {})
+        new_part = new.get(key)
+        if isinstance(new_part, dict):
+            for k, v in new_part.items():
+                cur.setdefault(k, v)
+    return out
 
 
-def _take_translations(data, items: list, vi_by_idx: dict) -> None:
-    """Lấy bản dịch {"idx": vi} cho đúng các dòng của cửa sổ.
-    Chuỗi rỗng = model cố ý để trống (rác) → vẫn tính là đã trả lời; thiếu key mới là bỏ sót."""
-    if not isinstance(data, dict):
-        return
-    for it in items:
-        vi = data.get(str(it["idx"]))
-        if isinstance(vi, str):
-            vi_by_idx[it["idx"]] = vi.strip()
+def build_story(lines: list, candidates: list, existing: dict) -> dict:
+    """Bước 1: hồ sơ truyện từ TOÀN BỘ lời thoại (1 lời gọi). existing: hồ sơ đã có → chỉ bổ sung."""
+    skip = set(candidates)                     # chữ hiện lâu đưa riêng, không lặp trong lời thoại
+    dialogue, prev = [], None
+    for l in lines:
+        if l["loai"] == "thoai" and l["zh"] not in skip and l["zh"] != prev:
+            dialogue.append(l["zh"])           # bỏ dòng trùng liên tiếp (1 câu bị OCR tách nhiều segment)
+            prev = l["zh"]
+    user = ("HỒ SƠ ĐÃ CÓ (giữ nguyên, chỉ bổ sung):\n" + json.dumps(existing or {}, ensure_ascii=False)
+            + "\n\nCHỮ HIỆN LÂU TRÊN MÀN HÌNH:\n" + json.dumps(candidates, ensure_ascii=False)
+            + "\n\nLỜI THOẠI THEO THỨ TỰ:\n" + "\n".join(dialogue))
+    # Hồ sơ không có nhân vật nào = vô dụng cho xưng hô → không cache, hỏi lại / đổi provider (check),
+    # hỏng hết thì LLMError. Series đã có nhân vật thì tập mới có thể không thêm ai.
+    need_chars = not (existing or {}).get("nhan_vat")
+    got = ask_json(STORY_SYS, user, temperature=0.0,
+                   check=lambda o: isinstance(o, dict) and (not need_chars or bool(o.get("nhan_vat"))))
+    return merge_story(existing or {}, got)
 
 
-def qa_consistency_pass(transcript: list, vi_by_idx: dict, profiles: dict,
-                        window: int = 150) -> dict:
-    """Phase 4: rà soát & sửa các dòng sai chủ ngữ/xưng hô. Cập nhật vi_by_idx tại chỗ."""
-    prof_str = _format_profiles(profiles)
-    n = len(transcript)
-    fixed_total = 0
-    for start in range(0, n, window):
-        chunk = transcript[start:start + window]
-        window_ids = {it["idx"] for it in chunk}
-        rows = []
-        for it in chunk:
-            vi = vi_by_idx.get(it["idx"], "")
-            if not vi:
-                continue
-            sp = it.get("speaker") or (", ".join(it.get("onscreen", [])) or "?")
-            rows.append(f"[{it['idx']}] | {sp} | {it['cleaned']} | {vi}")
-        if not rows:
+def mark_labels_and_onscreen(lines: list, story: dict) -> None:
+    """Dòng là nhãn tên → loai='nhan'. Dòng thoại: 'tren_man_hinh' = nhân vật có nhãn đang hiện cùng lúc."""
+    nhan = story.get("nhan") or {}
+    labels = []
+    for l in lines:
+        if l["zh"] and l["zh"] in nhan:
+            l["loai"] = "nhan"
+            labels.append(l)
+        elif l["zh"]:
+            l["loai"] = "thoai"
+    for l in lines:
+        if l["loai"] == "thoai":
+            l["tren_man_hinh"] = sorted({nhan[x["zh"]] for x in labels
+                                         if x["start"] <= l["end"] and l["start"] <= x["end"]})
+
+
+# ── Bước 2: người nói / người nghe ──
+
+def _story_brief(story: dict) -> str:
+    nv = story.get("nhan_vat") or {}
+    rows = [f"  - {i}: {v.get('ten', i)} ({v.get('gioi_tinh', '?')}; {v.get('vai', '')})"
+            for i, v in nv.items() if isinstance(v, dict)]
+    return ("TÓM TẮT: " + (story.get("tom_tat") or "(chưa có)")
+            + "\nNHÂN VẬT (id: tên):\n" + ("\n".join(rows) or "  (chưa có)"))
+
+
+def _speaker_row(l: dict) -> str:
+    tag = f"({l['noi']}→{l.get('nghe') or '?'}) " if l.get("noi") else ""
+    on = f"(Trên màn hình: {', '.join(l['tren_man_hinh'])}) " if l.get("tren_man_hinh") else ""
+    return f"[{l['id']}] {tag}{on}{l['zh']}"
+
+
+def _apply_speakers(got, items: list, ids: set) -> list:
+    """Gán kết quả bước 2 cho đúng các dòng; trả về các dòng model bỏ sót."""
+    got = got if isinstance(got, dict) else {}
+    missing = []
+    for l in items:
+        r = got.get(str(l["id"]))
+        if not isinstance(r, dict) or not r.get("noi"):
+            missing.append(l)
             continue
-        user = "HỒ SƠ NHÂN VẬT:\n" + prof_str + "\n\nKỊCH BẢN:\n" + "\n".join(rows)
+        noi, nghe = str(r["noi"]), str(r.get("nghe") or "?")
+        l["noi"] = noi if noi in ids else "?"
+        l["nghe"] = nghe if (nghe in ids or nghe == "*") else "?"
         try:
-            fixes = ask_json(_QA_SYS, user, temperature=0.0)
+            chac = float(r.get("chac", 0.5))
+        except (TypeError, ValueError):
+            chac = 0.5
+        l["chac"] = 0.0 if l["noi"] == "?" else max(0.0, min(1.0, chac))
+    return missing
+
+
+def attribute_speakers(lines: list, story: dict) -> None:
+    """Bước 2: điền noi/nghe/chac cho dòng thoại CÒN THIẾU (dòng đã có — kể cả sửa tay — giữ nguyên).
+    Model vẫn bỏ sót sau khi hỏi lại → noi='?' chac=0: không dừng, bước dịch vẫn tự suy được."""
+    ids = {i for i, v in (story.get("nhan_vat") or {}).items() if isinstance(v, dict)}
+    sys_prompt = SPEAKER_SYS + "\n\n" + _story_brief(story)
+    dialog = [l for l in lines if l["loai"] == "thoai"]
+    for start in range(0, len(dialog), SPEAKER_WINDOW):
+        window = dialog[start:start + SPEAKER_WINDOW]
+        todo = [l for l in window if not l.get("noi")]
+        if not todo:
+            continue
+        ctx = dialog[max(0, start - SPEAKER_CONTEXT):start]
+        user = ("NGỮ CẢNH TRƯỚC ĐÓ:\n" + ("\n".join(_speaker_row(l) for l in ctx) or "(không có)")
+                + "\n\nĐOẠN CẦN XÁC ĐỊNH:\n" + "\n".join(_speaker_row(l) for l in window))
+        missing = _apply_speakers(ask_json(sys_prompt, user, temperature=0.0), todo, ids)
+        if missing:
+            need = {str(l["id"]) for l in missing}
+            retry = user + "\n\nCHỈ xác định các dòng: " + ", ".join(sorted(need, key=int))
+            try:  # check → câu hỏi lại mà vẫn thiếu thì KHÔNG bị cache, lần chạy sau hỏi lại được
+                got = ask_json(sys_prompt, retry, temperature=0.0,
+                               check=lambda o: isinstance(o, dict) and need <= set(o))
+                missing = _apply_speakers(got, missing, ids)
+            except LLMError as e:
+                print(f"  [Người nói][WARN] {len(missing)} dòng chưa xác định được: {e}")
+        for l in missing:
+            l.update(noi="?", nghe="?", chac=0.0)
+
+
+# ── Bước 3 + 4: dịch theo cặp xưng hô, rà soát ──
+
+def _context(story: dict, rows: list, owned: list) -> str:
+    """Khối ngữ cảnh cho 1 cửa sổ: CHỈ nhân vật / cặp xưng hô / tên riêng xuất hiện trong cửa sổ
+    (prompt gọn hơn; sửa 1 cặp xưng hô chỉ làm lỡ cache của những cửa sổ có cặp đó)."""
+    nv = story.get("nhan_vat") or {}
+    xh = story.get("xung_ho") or {}
+    who = sorted({x for l in rows for x in (l.get("noi"), l.get("nghe")) if x in nv})
+    pairs = {}
+    for l in owned:
+        a, b = l.get("noi"), l.get("nghe")
+        for key in (f"{a}>{b}", f"{a}>*"):
+            if isinstance(xh.get(key), dict):
+                pairs[key] = xh[key]
+                break
+    text = "".join(l["zh"] for l in rows)
+    names = {zh: vi for zh, vi in (story.get("ten_rieng") or {}).items() if zh and zh in text}
+
+    def info(i):
+        v = nv[i] if isinstance(nv[i], dict) else {}
+        return f"  - {i}: {v.get('ten', i)} ({v.get('gioi_tinh', '?')}; {v.get('vai', '')})"
+    return ("THỂ LOẠI: " + (story.get("the_loai") or "phim ngắn Trung Quốc")
+            + "\nTÓM TẮT: " + (story.get("tom_tat") or "(chưa có)")
+            + "\nNHÂN VẬT:\n" + ("\n".join(info(i) for i in who) or "  (không rõ)")
+            + "\nXƯNG HÔ (A→B: A tự xưng «…», gọi B «…»):\n"
+            + ("\n".join(f"  - {k.replace('>', '→')}: xưng «{v.get('xung', '')}», gọi «{v.get('goi', '')}»"
+                         for k, v in sorted(pairs.items()))
+               or "  (không có — tự suy từ hồ sơ và mạch truyện)")
+            + "\nTÊN RIÊNG:\n" + ("\n".join(f"  - {zh} → {vi}" for zh, vi in sorted(names.items()))
+                                   or "  (không có)"))
+
+
+def _tr_row(l: dict) -> str:
+    return f"[{l['id']}] ({l.get('noi') or '?'}→{l.get('nghe') or '?'}) {l['zh']}"
+
+
+def _apply_translations(got, items: list, allow_empty: bool) -> list:
+    """Gán bản dịch cho đúng các dòng; trả về dòng bỏ sót. Chuỗi rỗng chỉ nhận ở lần HỎI LẠI
+    (model khẳng định là rác); lần đầu coi như bỏ sót để hỏi lại — tránh phụ đề trống âm thầm."""
+    got = got if isinstance(got, dict) else {}
+    missing = []
+    for l in items:
+        vi = got.get(str(l["id"]))
+        if isinstance(vi, str) and (vi.strip() or allow_empty):
+            l["vi"] = vi.strip()
+        else:
+            missing.append(l)
+    return missing
+
+
+def translate_lines(lines: list, story: dict) -> None:
+    """Bước 3: dịch TỪNG LẦN XUẤT HIỆN (cùng câu tiếng Trung, khác người nói → khác xưng hô).
+    Mỗi cửa sổ chỉ dịch dòng của nó. Ngữ cảnh chỉ gồm tiếng Trung + người nói (KHÔNG kèm bản dịch),
+    nên sửa 1 cửa sổ không làm lỡ cache các cửa sổ sau. Bỏ sót sau khi hỏi lại → LLMError."""
+    items = [l for l in lines if l["loai"] == "thoai"]   # nhãn tên dịch riêng (translate_labels)
+    for start in range(0, len(items), TRANSLATE_WINDOW):
+        window = items[start:start + TRANSLATE_WINDOW]
+        ctx = items[max(0, start - TRANSLATE_CONTEXT):start]
+        sys_prompt = TRANSLATE_SYS + "\n\n" + _context(story, ctx + window, window)
+        user = ("NGỮ CẢNH TRƯỚC ĐÓ (không dịch):\n" + ("\n".join(_tr_row(l) for l in ctx) or "(không có)")
+                + "\n\nCẦN DỊCH:\n" + "\n".join(_tr_row(l) for l in window))
+        missing = _apply_translations(ask_json(sys_prompt, user), window, allow_empty=False)
+        if missing:
+            need = {str(l["id"]) for l in missing}
+            retry = user + "\n\nCHỈ dịch các dòng: " + ", ".join(sorted(need, key=int))
+            try:  # check → câu hỏi lại mà vẫn thiếu thì KHÔNG bị cache, lần chạy sau hỏi lại được
+                got = ask_json(sys_prompt, retry,
+                               check=lambda o: isinstance(o, dict) and all(isinstance(o.get(i), str) for i in need))
+                missing = _apply_translations(got, missing, allow_empty=True)
+            except LLMError:
+                pass
+        if missing:
+            raise LLMError(f"Model bỏ sót {len(missing)} dòng kể cả khi hỏi lại: "
+                           + "; ".join(f"[{l['id']}] {l['zh']}" for l in missing[:10]))
+        for l in window:
+            if not l["vi"]:
+                print(f"  [Dịch][WARN] Model để trống (coi là rác): [{l['id']}] {l['zh']}")
+
+
+def translate_labels(lines: list, story: dict) -> None:
+    """Nhãn tên: mỗi chữ nhãn dịch 1 lần (không chèn hàng trăm dòng nhãn vào giữa lời thoại),
+    rồi gán cho mọi lần xuất hiện. Thiếu bản dịch nhãn nào → không cache, hỏi lại / đổi provider → LLMError."""
+    texts = list(dict.fromkeys(l["zh"] for l in lines if l["loai"] == "nhan"))
+    if not texts:
+        return
+    nv, nhan = story.get("nhan_vat") or {}, story.get("nhan") or {}
+
+    def owner(zh):
+        v = nv.get(nhan.get(zh))
+        return v.get("ten", "?") if isinstance(v, dict) else "?"
+    user = "\n".join(f"[{i}] {zh} (nhãn của: {owner(zh)})" for i, zh in enumerate(texts))
+    need = [str(i) for i in range(len(texts))]
+    got = ask_json(LABEL_SYS, user,
+                   check=lambda o: isinstance(o, dict) and all(isinstance(o.get(i), str) and o[i].strip() for i in need))
+    vi = {zh: got[str(i)].strip() for i, zh in enumerate(texts)}
+    for l in lines:
+        if l["loai"] == "nhan":
+            l["vi"] = vi[l["zh"]]
+
+
+def qa_lines(lines: list, story: dict) -> int:
+    """Bước 4: soát xưng hô / chủ ngữ / ý theo cốt truyện. Chỉ nhận id của cửa sổ.
+    QA lỗi → giữ bản dịch hiện có, báo WARN. Trả về số dòng đã sửa."""
+    items = [l for l in lines if l["loai"] == "thoai" and l.get("vi")]
+    fixed = 0
+    for start in range(0, len(items), QA_WINDOW):
+        window = items[start:start + QA_WINDOW]
+        own = {str(l["id"]): l for l in window}
+        sys_prompt = QA_SYS + "\n\n" + _context(story, window, window)
+        user = "\n".join(f"[{l['id']}] {l.get('noi') or '?'}→{l.get('nghe') or '?'} | {l['zh']} | {l['vi']}"
+                         for l in window)
+        try:
+            got = ask_json(sys_prompt, user, temperature=0.0)
         except LLMError as e:
-            print(f"  [Phase 4][WARN] QA cửa sổ {start} lỗi: {e}")
-            fixes = None
-        if isinstance(fixes, dict):
-            for k, v in fixes.items():
-                try:
-                    idx = int(k)
-                except (ValueError, TypeError):
-                    continue
-                if idx in window_ids and v and isinstance(v, str):
-                    vi_by_idx[idx] = v.strip()
-                    fixed_total += 1
-    if fixed_total:
-        print(f"  [Phase 4] QA đã sửa {fixed_total} dòng cho nhất quán chủ ngữ/xưng hô")
-    return vi_by_idx
-
-
-def translate_contextual(text_segments: list, normalized_mapping: dict,
-                         texts_to_translate: list, glossary: dict, profiles_path: str) -> dict:
-    """
-    Orchestrator Phase 1-4. Trả về {cleaned_zh: vi} phủ tối đa texts_to_translate.
-    Ném LLMError nếu LLM hỏng / vẫn bỏ sót dòng → caller dừng (exit 1); phần đã xong nằm trong cache.
-    """
-    print("  [Phase 1] Dựng transcript theo thứ tự thời gian...")
-    transcript = build_ordered_transcript(text_segments, normalized_mapping, glossary)
-    if not transcript:
-        raise RuntimeError("Transcript rỗng (không có segment hợp lệ)")
-    n_label = sum(1 for it in transcript if it["is_label"])
-    print(f"    {len(transcript)} dòng ({n_label} nhãn tên, {len(transcript)-n_label} thoại)")
-
-    print("  [Phase 3] Suy luận hồ sơ nhân vật...")
-    profiles = infer_character_profiles(transcript, glossary, profiles_path)
-
-    print("  [Phase 1+2] Dịch kịch bản theo ngữ cảnh + người nói...")
-    vi_by_idx = translate_script(transcript, profiles, glossary)
-
-    print("  [Phase 4] Rà soát nhất quán...")
-    qa_consistency_pass(transcript, vi_by_idx, profiles)
-
-    # Dựng cleaned -> vi
-    cleaned_to_vi = {}
-    for it in transcript:
-        vi = vi_by_idx.get(it["idx"])
-        if vi:
-            cleaned_to_vi[it["cleaned"]] = vi
-
-    # Câu sạch không có trong transcript = biến thể OCR của một dòng đã dịch → mượn bản dịch dòng
-    # giống nhất (giữ đúng xưng hô theo ngữ cảnh), không dịch rời rạc.
-    leftover = [t for t in texts_to_translate if t not in cleaned_to_vi]
-    if leftover:
-        known = list(cleaned_to_vi)
-        borrowed = 0
-        for t in leftover:
-            match = get_close_matches(t, known, n=1, cutoff=0.7)
-            if match:
-                cleaned_to_vi[t] = cleaned_to_vi[match[0]]
-                borrowed += 1
-        print(f"  [Bổ sung] {len(leftover)} biến thể ngoài transcript: {borrowed} mượn bản dịch dòng "
-              f"giống nhất, {len(leftover) - borrowed} để trống")
-
-    return cleaned_to_vi
+            print(f"  [Rà soát][WARN] Bỏ qua cửa sổ {start}: {e}")
+            continue
+        for k, v in (got.items() if isinstance(got, dict) else []):
+            if k in own and isinstance(v, str) and v.strip():
+                own[k]["vi"] = v.strip()
+                fixed += 1
+    return fixed
 
 
 def run_translation(video_path: str):
-    """Chạy dịch thuật cho video (đã OCR), xuất jobs/<tên>/translation_map.json. Trả về True nếu thành công."""
+    """Dịch video (đã OCR) theo cốt truyện → jobs/<tên>/lines.json (+ story.json). Trả về True nếu thành công."""
     print("=" * 55)
-    print("  Monggu Translate - Pass 2: Translation")
+    print("  Monggu Translate - Pass 2: Dịch theo cốt truyện")
     print("=" * 55)
-
-    # Load data
-    print("\n[1/3] Đọc dữ liệu...")
     try:
         job = open_job(video_path)
     except JobError as e:
@@ -373,75 +410,61 @@ def run_translation(video_path: str):
     if ocr_data.get("complete") is False:
         print("  [ERROR] OCR của video này chưa chạy xong (bị ngắt?) — chạy tiếp ocr_pass.py trước.")
         return False
-
-    glossary = load_glossary(job.glossary)
     unique_texts = ocr_data.get("unique_texts", [])
-
+    text_segments = ocr_data.get("text_segments", [])
     if not unique_texts:
         print("  [ERROR] Không có text nào để dịch!")
         return False
-
-    text_segments = ocr_data.get("text_segments", [])
     if not text_segments:
         print("  [ERROR] ocr_data.json thiếu text_segments — hãy chạy lại OCR.")
         return False
 
-    print(f"  Tổng cộng {len(unique_texts)} câu ban đầu")
-
+    t0 = time.time()
     try:
-        print("\n[1.5/3] Normalize Texts...")
-        t_start_norm = time.time()
-        normalized_mapping = normalize_texts(unique_texts)
-
-        # Câu đã làm sạch, có nghĩa, bỏ trùng (giữ thứ tự)
-        texts_to_translate = list(dict.fromkeys(c for c in normalized_mapping.values() if c))
-        print(f"  => Sau khi clean, còn lại {len(texts_to_translate)} câu cần dịch "
-              f"(thời gian: {time.time() - t_start_norm:.1f}s)")
-        if not texts_to_translate:
+        print(f"\n[0/4] Chuẩn hóa {len(unique_texts)} chữ OCR...")
+        lines = build_lines(text_segments, normalize_texts(unique_texts), _load_json(job.lines, []))
+        if not any(l["loai"] == "thoai" for l in lines):
             print("  [ERROR] Tất cả text đều bị lọc thành rác. Không có gì để dịch!")
             return False
 
-        print(f"\n[2/3] Dịch theo NGỮ CẢNH kịch bản (Phase 1-4) — {len(text_segments)} segment...")
-        t0 = time.time()
-        cleaned_translation_map = translate_contextual(
-            text_segments, normalized_mapping, texts_to_translate, glossary, job.profiles)
-    except (LLMError, RuntimeError) as e:
+        story = _load_json(job.story, {})
+        if job.series or not story:
+            print(f"\n[1/4] Hồ sơ truyện ({'series ' + job.series if job.series else 'video lẻ'})...")
+            story = build_story(lines, long_lived_texts(lines, ocr_data.get("fps") or 25.0), story)
+            write_json_atomic(job.story, story)
+        else:
+            print(f"\n[1/4] Dùng hồ sơ truyện có sẵn: {job.story}")
+        print(f"  {len(story.get('nhan_vat') or {})} nhân vật, {len(story.get('xung_ho') or {})} cặp xưng hô, "
+              f"{len(story.get('nhan') or {})} nhãn tên")
+
+        mark_labels_and_onscreen(lines, story)
+        print("\n[2/4] Xác định người nói / người nghe...")
+        attribute_speakers(lines, story)
+        print("\n[3/4] Dịch theo từng lần xuất hiện...")
+        translate_lines(lines, story)
+        translate_labels(lines, story)
+        print("\n[4/4] Rà soát...")
+        print(f"  Đã sửa {qa_lines(lines, story)} dòng")
+    except LLMError as e:
         print(f"  [ERROR] Dịch thất bại: {e}")
-        print("  Phần đã dịch xong nằm trong cache/llm.sqlite — chạy lại sẽ làm tiếp, không tốn lại.")
+        print("  Phần đã xong nằm trong cache/llm.sqlite — chạy lại sẽ làm tiếp, không tốn lại.")
         return False
 
-    # Dựng translation_map theo chữ OCR THÔ; rỗng = Pass 3 xóa chữ mà không vẽ (rác)
-    translation_map = {raw: (cleaned_translation_map.get(cleaned, "") if cleaned else "")
-                       for raw, cleaned in normalized_mapping.items()}
-
-    elapsed = time.time() - t0
-
-    # Không dịch được câu nào (mạng/quota hỏng hết) → đừng ghi map toàn chữ Trung/rỗng:
-    # render sẽ xóa sạch phụ đề gốc mà không vẽ gì, mà vẫn "thành công".
-    if not any(vi and not re.search(r'[\u4e00-\u9fff]', vi) for vi in translation_map.values()):
-        print("  [ERROR] Không dịch được câu nào — không ghi translation_map.json")
+    if not any(l.get("vi") for l in lines):
+        print("  [ERROR] Không dịch được câu nào — không ghi lines.json")
         return False
+    write_json_atomic(job.lines, lines)
 
-    # Xuất JSON
-    print(f"\n[3/3] Xuất translation_map.json...")
-    write_json_atomic(job.translation_map, translation_map)
-
+    dialog = [l for l in lines if l["loai"] == "thoai"]
+    sure = sum(1 for l in dialog if (l.get("chac") or 0) >= 0.7)
     print(f"\n{'=' * 55}")
-    print(f"  Dịch thuật hoàn tất!")
-    print(f"  Thời gian  : {elapsed:.1f}s")
-    print(f"  Số câu dịch: {len(translation_map)}")
-    print(f"  Output     : {job.translation_map}")
+    print(f"  Dịch xong trong {time.time() - t0:.1f}s")
+    print(f"  Dòng thoại: {len(dialog)} (chắc người nói: {sure}) | nhãn: "
+          f"{sum(l['loai'] == 'nhan' for l in lines)} | rác: {sum(l['loai'] == 'rac' for l in lines)}")
+    print(f"  Output    : {job.lines}")
     print(f"{'=' * 55}")
-
-    # Preview 5 câu đầu
-    print("\n  Preview bản dịch:")
-    for i, (zh, vi) in enumerate(translation_map.items()):
-        if i >= 5:
-            print(f"  ... và {len(translation_map) - 5} câu nữa")
-            break
-        print(f"  [{zh}]")
-        print(f"  → {vi}\n")
-
+    for l in dialog[:5]:
+        print(f"  [{l.get('noi')}→{l.get('nghe')}] {l['zh']}  →  {l.get('vi')}")
     return True
 
 
@@ -450,4 +473,3 @@ if __name__ == "__main__":
     parser.add_argument("--input", "-i", type=str, default=VIDEO_PATH, help="Đường dẫn video (đã chạy OCR)")
     args = parser.parse_args()
     sys.exit(0 if run_translation(args.input) else 1)
-

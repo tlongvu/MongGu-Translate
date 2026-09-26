@@ -243,7 +243,8 @@ Không chạy `translate_pass.py` thật (sẽ gọi API). Trường hợp thi�
    - chỉ hỏi những dòng còn thiếu `noi`;
    - `id` nhân vật lạ → `?`;
    - thiếu kết quả → hỏi lại một lần; vẫn thiếu thì `?` với `chac` = 0 (**không dừng**, vì bước dịch vẫn làm được).
-5. **`translate_lines`** — bước 3, cửa sổ 120 dòng (`thoai` + `nhan`) kèm 15 dòng đã dịch ngay trước:
+5. **`translate_labels`** — mỗi chữ nhãn tên dịch **1 lần** trong một lời gọi riêng, rồi gán cho mọi lần xuất hiện. Nhãn không chèn vào cửa sổ lời thoại: trên dữ liệu thật có 837 dòng nhãn, chiếm khoảng 23% mỗi cửa sổ, vừa làm loãng ngữ cảnh vừa tốn thêm 7 lời gọi.
+   **`translate_lines`** — bước 3, cửa sổ 120 dòng **thoại** kèm 15 dòng ngữ cảnh ngay trước. Ngữ cảnh chỉ gồm tiếng Trung + người nói, không kèm bản dịch (xem mục cache):
    - **Prompt gồm:**
      - tóm tắt, thể loại;
      - **chỉ** các nhân vật, cặp xưng hô và tên riêng xuất hiện trong cửa sổ.

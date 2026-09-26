@@ -145,7 +145,7 @@ def test_layout_cache_hits():
     assert info.hits >= 4, f"Cache không hoạt động: {info}"
 
 
-# ── Cache dịch (translate_pass) ──
+# ── Pass dịch (translate_pass) ──
 
 def test_run_translation_fails_without_input():
     d = tempfile.mkdtemp()
@@ -168,49 +168,140 @@ def test_run_translation_fails_without_input():
         shutil.rmtree(d, ignore_errors=True)
 
 
-def _fake_llm(first_window_reply):
-    """ask_json giả cho Phase 1-4: hồ sơ {}, QA {}, hỏi lại dòng thiếu → dịch dòng 3."""
-    calls = []
+# ── Dịch theo cốt truyện (translate_pass, B3) ──
 
-    def fake(system, user, temperature=0.1):
-        calls.append(user)
-        if 'CÂU THOẠI THEO THỨ TỰ' in user or 'KỊCH BẢN:' in user:  # Phase 3 hồ sơ / Phase 4 QA
-            return {}
-        if 'CHỈ dịch các dòng' in user:
-            return {"3": "Đi thôi"}
-        return first_window_reply
-    return fake, calls
+def _line(i, zh, start, end, **kw):
+    return dict({"id": i, "start": start, "end": end, "zh": zh, "loai": "thoai" if zh else "rac"}, **kw)
 
 
-def _run_contextual(fake, segs_texts, norm, texts):
-    segs = [{'text': t, 'start_frame': i * 10, 'end_frame': i * 10 + 5} for i, t in enumerate(segs_texts)]
-    orig_ask = tp.ask_json
-    tmp = tempfile.mkdtemp()
+def _with_fake_llm(fake, fn, *args):
+    orig = tp.ask_json
     try:
         tp.ask_json = fake
-        return tp.translate_contextual(segs, norm, texts, {}, os.path.join(tmp, "profiles.json"))
+        return fn(*args)
     finally:
-        tp.ask_json = orig_ask
-        shutil.rmtree(tmp, ignore_errors=True)
+        tp.ask_json = orig
 
 
-def test_translate_contextual_retries_missing_lines_and_borrows_variants():
-    fake, calls = _fake_llm({"1": "Xin chào", "2": "Ta muốn tu tiên!"})  # lần đầu bỏ sót dòng 3
-    norm = {'你好': '你好', '我要去修仙！': '我要去修仙！', '走吧': '走吧', '我要去修仙': '我要去修仙'}
-    out = _run_contextual(fake, ['你好', '我要去修仙！', '走吧'], norm, ['你好', '我要去修仙！', '走吧', '我要去修仙'])
-    assert out['走吧'] == 'Đi thôi', "Dòng bị bỏ sót phải được hỏi lại"
-    assert sum('CHỈ dịch các dòng: 3' in u for u in calls) == 1
-    assert out['我要去修仙'] == 'Ta muốn tu tiên!', "Biến thể OCR mượn bản dịch dòng giống nhất"
+def test_build_lines_keeps_manual_edits_only_for_same_text():
+    segs = [{'text': 'A1', 'start_frame': 0, 'end_frame': 5}, {'text': 'B1', 'start_frame': 10, 'end_frame': 15},
+            {'text': 'rác', 'start_frame': 20, 'end_frame': 25}]
+    norm = {'A1': '我知道了', 'B1': '走吧', 'rác': ''}
+    old = [{"id": 0, "zh": "我知道了", "noi": "yiyi", "nghe": "tieu_thu", "chac": 1.0, "vi_sua": "Nô tỳ biết rồi"},
+           {"id": 1, "zh": "câu cũ khác", "noi": "x"}]
+    lines = tp.build_lines(segs, norm, old)
+    assert lines[0]["noi"] == "yiyi" and lines[0]["vi_sua"] == "Nô tỳ biết rồi", "Sửa tay phải được giữ"
+    assert "noi" not in lines[1], "Chữ đổi (OCR chạy lại) → bỏ dữ liệu cũ của id đó"
+    assert lines[2]["loai"] == "rac"
 
 
-def test_translate_contextual_raises_when_lines_still_missing():
-    fake, _ = _fake_llm({"1": "Xin chào"})  # hỏi lại cũng chỉ ra dòng 3, dòng 2 vẫn thiếu
+def test_long_lived_texts_are_label_candidates():
+    lines = [_line(i, '孙晴', i * 30, i * 30 + 29) for i in range(4)]          # nhãn: 4 × 1.2s = 4.8s
+    lines += [_line(10, '我要去修仙！', 200, 240), _line(11, '这是一句很长很长的对白啊', 300, 500)]
+    assert tp.long_lived_texts(lines, 25.0) == ['孙晴'], "Thoại ngắn hạn / câu dài không phải nhãn"
+
+
+def test_labels_mark_onscreen_characters():
+    lines = [_line(0, '孙晴', 0, 100), _line(1, '你来了', 10, 20), _line(2, '走', 200, 210)]
+    tp.mark_labels_and_onscreen(lines, {"nhan": {"孙晴": "sun_qing"}})
+    assert lines[0]["loai"] == "nhan"
+    assert lines[1]["tren_man_hinh"] == ["sun_qing"] and lines[2]["tren_man_hinh"] == []
+
+
+def test_merge_story_only_adds():
+    old = {"tom_tat": "cũ", "nhan_vat": {"yiyi": {"ten": "Y Y (sửa tay)"}},
+           "xung_ho": {"yiyi>tieu_thu": {"xung": "nô tỳ", "goi": "tiểu thư"}}}
+    new = {"tom_tat": "mới", "nhan_vat": {"yiyi": {"ten": "Y Y"}, "bach_lang": {"ten": "Bạch Lang"}},
+           "xung_ho": {"yiyi>tieu_thu": {"xung": "tôi", "goi": "cô"}, "bach_lang>*": {"xung": "ta", "goi": "các ngươi"}}}
+    m = tp.merge_story(old, new)
+    assert m["tom_tat"] == "cũ" and m["nhan_vat"]["yiyi"]["ten"] == "Y Y (sửa tay)"
+    assert m["xung_ho"]["yiyi>tieu_thu"]["xung"] == "nô tỳ", "Cặp xưng hô đã có không bị ghi đè"
+    assert "bach_lang" in m["nhan_vat"] and "bach_lang>*" in m["xung_ho"], "Cái mới được bổ sung"
+
+
+def test_context_includes_only_what_is_in_window():
+    story = {"nhan_vat": {"a": {"ten": "A"}, "b": {"ten": "B"}, "c": {"ten": "C"}},
+             "xung_ho": {"a>b": {"xung": "ta", "goi": "ngươi"}, "c>a": {"xung": "đệ", "goi": "huynh"},
+                         "b>*": {"xung": "tôi", "goi": "mọi người"}},
+             "ten_rieng": {"天元宗": "Thiên Nguyên Tông", "青云": "Thanh Vân"}}
+    rows = [_line(1, '去天元宗', 0, 5, noi='a', nghe='b'), _line(2, '好', 6, 9, noi='b', nghe='a')]
+    ctx = tp._context(story, rows, rows)
+    assert 'a→b' in ctx and 'b→*' in ctx, "Cặp trực tiếp, hoặc mặc định của người nói"
+    assert 'c→a' not in ctx and '- c:' not in ctx, "Nhân vật / cặp không có trong cửa sổ thì không đưa vào"
+    assert 'Thiên Nguyên Tông' in ctx and 'Thanh Vân' not in ctx
+
+
+def test_attribute_speakers_fills_only_missing():
+    story = {"nhan_vat": {"a": {"ten": "A"}, "b": {"ten": "B"}}}
+    lines = [_line(1, '你好', 0, 5, noi='b', nghe='a', chac=1.0),       # đã có (sửa tay) → giữ
+             _line(2, '走吧', 6, 9), _line(3, '什么', 10, 12), _line(4, '好', 13, 15)]
+
+    def fake(system, user, temperature=0.1, **kw):
+        if 'CHỈ xác định' in user:
+            return {}                                                    # hỏi lại vẫn thiếu dòng 4
+        return {"1": {"noi": "a", "nghe": "b", "chac": 1}, "2": {"noi": "a", "nghe": "b", "chac": 0.9},
+                "3": {"noi": "zz", "nghe": "a", "chac": 0.8}}            # id lạ → "?"
+    _with_fake_llm(fake, tp.attribute_speakers, lines, story)
+    assert (lines[0]["noi"], lines[0]["nghe"]) == ("b", "a"), "Dòng đã có không bị ghi đè"
+    assert (lines[1]["noi"], lines[1]["nghe"], lines[1]["chac"]) == ("a", "b", 0.9)
+    assert lines[2]["noi"] == "?" and lines[2]["chac"] == 0.0, "id nhân vật lạ → ?"
+    assert lines[3]["noi"] == "?" and lines[3]["chac"] == 0.0, "Bỏ sót sau khi hỏi lại → ? (không dừng)"
+
+
+def test_translate_lines_each_line_once():
+    lines = [_line(i, f'句{i}', i * 10, i * 10 + 5, noi='a', nghe='b') for i in range(250)]
+    owned = []
+
+    def fake(system, user, temperature=0.1, **kw):
+        todo = user.split("CẦN DỊCH:\n", 1)[1]
+        ids = [int(x[1:x.index("]")]) for x in todo.splitlines() if x.startswith("[")]
+        owned.extend(ids)
+        return {str(i): f"VI{i}" for i in ids}
+    _with_fake_llm(fake, tp.translate_lines, lines, {})
+    assert sorted(owned) == list(range(250)), "Mỗi dòng dịch đúng 1 lần (dòng ngữ cảnh không dịch lại)"
+    assert all(l["vi"] == f"VI{l['id']}" for l in lines)
+
+
+def test_translate_labels_once_per_text_not_mixed_into_dialogue():
+    lines = [_line(0, '孙晴', 0, 50, loai='nhan'), _line(1, '你来了', 10, 20, noi='a', nghe='b'),
+             _line(2, '孙晴', 60, 90, loai='nhan'), _line(3, '宛雪（女主）', 60, 90, loai='nhan')]
+    seen = []
+
+    def fake(system, user, temperature=0.1, **kw):
+        seen.append(user)
+        return {"0": "Tôn Tình", "1": "Uyển Tuyết (nữ chính)"}
+    _with_fake_llm(fake, tp.translate_labels, lines, {"nhan": {"孙晴": "sun_qing"}})
+    assert len(seen) == 1 and seen[0].count('孙晴') == 1, "Mỗi chữ nhãn dịch đúng 1 lần"
+    assert '你来了' not in seen[0], "Lời thoại không lẫn vào lời gọi dịch nhãn"
+    assert [l.get("vi") for l in lines] == ["Tôn Tình", None, "Tôn Tình", "Uyển Tuyết (nữ chính)"]
+
+
+def test_translate_lines_retries_missing_and_empty_then_raises():
+    lines = [_line(1, '你好', 0, 5, noi='a', nghe='b'), _line(2, '走吧', 6, 9, noi='b', nghe='a')]
+    calls = []
+
+    def fake(system, user, temperature=0.1, **kw):
+        calls.append(user)
+        return {"1": "Xin chào", "2": ""} if 'CHỈ dịch' not in user else {"2": "Đi thôi"}  # lần đầu để trống dòng 2
+    _with_fake_llm(fake, tp.translate_lines, lines, {})
+    assert [l["vi"] for l in lines] == ["Xin chào", "Đi thôi"] and len(calls) == 2, "Rỗng lần đầu → hỏi lại"
     try:
-        _run_contextual(fake, ['你好', '走吧', '好的'], {'你好': '你好', '走吧': '走吧', '好的': '好的'},
-                        ['你好', '走吧', '好的'])
-        raise AssertionError("Phải ném LLMError khi vẫn thiếu dòng")
-    except tp.LLMError:
-        pass
+        _with_fake_llm(lambda s, u, temperature=0.1, **kw: {"1": "Xin chào"}, tp.translate_lines,
+                       [_line(1, '你好', 0, 5), _line(2, '走吧', 6, 9)], {})
+        raise AssertionError("Vẫn thiếu dòng phải ném LLMError")
+    except tp.LLMError as e:
+        assert "走吧" in str(e), "Báo lỗi phải kèm câu tiếng Trung bị thiếu"
+
+
+def test_segment_index_uses_per_occurrence_translation():
+    # Cùng một câu tiếng Trung, 2 lần xuất hiện, 2 người nói khác nhau → 2 bản dịch khác nhau
+    box = [100, 900, 340, 940]
+    segs = [{'id': 0, 'text': '我知道了', 'start_frame': 0, 'end_frame': 10, 'bbox': box, 'keyframe_bboxes': []},
+            {'id': 1, 'text': '我知道了', 'start_frame': 50, 'end_frame': 60, 'bbox': box, 'keyframe_bboxes': []}]
+    idx = s._build_segment_index(segs, 0, 70, {'我知道了': 'Tôi biết rồi'}, ocr_interval_frames=1,
+                                 vi_for_seg={0: 'Bản tiểu thư biết rồi', 1: 'Nô tỳ biết rồi'})
+    assert idx[5][0]['vi_text'] == 'Bản tiểu thư biết rồi'
+    assert idx[55][0]['vi_text'] == 'Nô tỳ biết rồi'
 
 
 # ── Ghi JSON an toàn (utils) ──

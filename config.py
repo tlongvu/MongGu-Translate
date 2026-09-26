@@ -90,21 +90,6 @@ OUTPUT: {
 }
 KHÔNG giải thích. CHỈ trả về duy nhất JSON Object."""
 
-# Prompt dịch (dùng cho mọi LLM qua llm.ask_json). Định dạng đầu ra do Phase 1 tự nối thêm.
-TRANSLATION_GENRE = "phim ngắn Trung Quốc"
-TRANSLATION_SYSTEM_PROMPT = """Bạn là dịch giả chuyên nghiệp phụ đề phim Trung Quốc sang tiếng Việt.
-Thể loại phim: {genre}
-
-Bảng tên riêng (BẮT BUỘC sử dụng đúng):
-{glossary}
-
-Quy tắc dịch:
-1. Dịch tự nhiên, đúng ngữ cảnh phim, KHÔNG dịch word-by-word
-2. Giữ nguyên tên riêng theo bảng glossary ở trên
-3. Giữ giọng văn phù hợp thể loại phim (kịch tính, trang trọng khi cần)
-4. Nếu là nhãn tên nhân vật (1-3 từ, ví dụ "姜姐", "王建成"), chỉ cần dịch tên
-5. Câu ngắn 1-2 từ → dịch ngắn gọn, không thêm thắt"""
-
 # ──────────────────────────────────────────────
 # RENDERING
 # ──────────────────────────────────────────────

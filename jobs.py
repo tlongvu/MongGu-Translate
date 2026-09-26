@@ -1,6 +1,6 @@
 """
 Monggu Translate - Thư mục job: mỗi video một thư mục jobs/<tên>/ chứa mọi dữ liệu của video đó.
-Video thuộc series thì hồ sơ nhân vật + glossary nằm ở series/<bộ>/, dùng chung giữa các tập.
+Video thuộc series thì hồ sơ truyện (story.json) nằm ở series/<bộ>/, dùng chung giữa các tập.
 """
 
 import hashlib
@@ -58,8 +58,7 @@ def open_job(video_path: str, series: str = None, create: bool = False) -> Simpl
     return SimpleNamespace(
         name=name, dir=d, series=meta.get("series"),
         ocr_data=os.path.join(d, "ocr_data.json"),
-        translation_map=os.path.join(d, "translation_map.json"),
+        lines=os.path.join(d, "lines.json"),
         output=os.path.join(d, f"{name}_vi.mp4"),
-        profiles=os.path.join(shared, "character_profiles.json"),
-        glossary=os.path.join(shared, "glossary.json"),
+        story=os.path.join(shared, "story.json"),
     )
