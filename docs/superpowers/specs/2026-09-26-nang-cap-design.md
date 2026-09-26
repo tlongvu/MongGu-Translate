@@ -92,6 +92,8 @@ Mỗi dự án con đi đủ vòng spec → plan → code. Tài liệu này chi 
 
 Bỏ luật 3 giảm 90% số frame sai câu, đổi lại chỉ thêm 39 frame có nguy cơ chồng dòng. Các trường hợp đó đều là chữ biển hiệu bị OCR đọc sai (`搭筝堂`/`撩拿堂`). Hiệu ứng chữ hiện dần (typewriter) không bị ảnh hưởng: phần chữ đã hiện có IoU > 0.6 với cả câu thì luôn giống ≥ 0.75, nên luật 2 đã xử lý.
 
+Đo lại ở mức render (review độc lập, tính cả phần mở rộng ±5 frame): số frame có ≥2 segment chồng nhau với bản dịch khác nhau tăng 1681 → 1856 (+10%), nhiều hơn con số 39 frame ở trên; sau khi sửa lỗi nới giới hạn trong `_build_segment_index` (chỉ được thu hẹp) còn 1787. Đổi lại vẫn rất có lợi so với −1159 keyframe vẽ sai câu.
+
 **Dữ liệu cũ:** `ocr_data.json` đã có vẫn chứa segment sai. Video mới tự đúng; video cũ muốn render lại thì chạy lại OCR.
 
 ### A2. Pass lỗi thì thoát mã khác 0

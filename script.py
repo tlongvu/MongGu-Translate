@@ -683,14 +683,14 @@ def _build_segment_index(text_segments: list, start_frame: int, end_frame: int,
                 if limits_first[1] >= limits_second[0]:
                     if gap <= 1:
                         # Ranh giới quá sát, không cho mở rộng ở điểm chạm
-                        limits_first[1] = first_seg['end_frame']
-                        limits_second[0] = second_seg['start_frame']
+                        limits_first[1] = min(limits_first[1], first_seg['end_frame'])
+                        limits_second[0] = max(limits_second[0], second_seg['start_frame'])
                     else:
-                        # Chia đôi khoảng trống còn lại cho hai bên
+                        # Chia đôi khoảng trống còn lại cho hai bên (chỉ thu hẹp, không nới lại)
                         ext_first = (gap - 1) // 2
                         ext_second = gap - 1 - ext_first
-                        limits_first[1] = first_seg['end_frame'] + ext_first
-                        limits_second[0] = second_seg['start_frame'] - ext_second
+                        limits_first[1] = min(limits_first[1], first_seg['end_frame'] + ext_first)
+                        limits_second[0] = max(limits_second[0], second_seg['start_frame'] - ext_second)
 
     # 3. Tiến hành phân bổ segment vào index của từng frame dựa trên giới hạn đã tối ưu
     for seg in text_segments:
@@ -1051,7 +1051,7 @@ def process_chunk(args):
         if ffmpeg_proc and ffmpeg_proc.stdin:
             try:
                 ffmpeg_proc.stdin.write(frame.tobytes())
-            except BrokenPipeError:
+            except OSError:
                 raise RuntimeError(f"[Worker {chunk_idx}] ffmpeg/NVENC dừng giữa chừng (pipe vỡ) — xem lỗi ffmpeg in ở trên")
         elif out:
             out.write(frame)
@@ -1200,9 +1200,11 @@ if __name__ == "__main__":
     converted_video = ocr_data.get("video", "")
     original_video = ocr_data.get("original_video", args.input)
 
-    if converted_video and converted_video != original_video and os.path.exists(converted_video):
-        video_path = converted_video
-        audio_source = original_video if os.path.exists(original_video) else args.input
+    # ocr_pass ghi video đã convert CẠNH video gốc (chỉ lưu basename) → tìm ở đó, không phải thư mục hiện tại
+    converted_path = os.path.join(os.path.dirname(os.path.abspath(args.input)), converted_video)
+    if converted_video and converted_video != original_video and os.path.exists(converted_path):
+        video_path = converted_path
+        audio_source = args.input  # video convert đã bỏ tiếng (-an); tiếng lấy từ video gốc
     else:
         video_path = args.input
         audio_source = args.input
@@ -1300,13 +1302,13 @@ if __name__ == "__main__":
         video_no_audio = output_video
         video_with_audio = output_video.replace(".mp4", "_audio.mp4")
         mux_cmd = [
-            "ffmpeg", "-y",
+            "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
             "-i", video_no_audio,      # Video đã render (không có audio)
             "-i", audio_source,         # Video gốc (lấy audio)
             "-c:v", "copy",             # Copy video stream (không re-encode)
             "-c:a", "aac",              # Encode audio AAC
             "-map", "0:v:0",            # Video từ file đầu
-            "-map", "1:a:0",            # Audio từ file gốc
+            "-map", "1:a:0?",           # Audio từ file gốc
             "-shortest",                # Cắt theo stream ngắn nhất
             video_with_audio
         ]
@@ -1314,8 +1316,7 @@ if __name__ == "__main__":
             result = subprocess.run(mux_cmd, capture_output=True, text=True, timeout=300)
             if result.returncode == 0:
                 # Thay thế file không audio bằng file có audio
-                os.remove(video_no_audio)
-                os.rename(video_with_audio, output_video)
+                os.replace(video_with_audio, output_video)
                 print(f"  Audio mux OK")
             else:
                 print(f"  [ERROR] Mux audio thất bại: {result.stderr[:200]}")

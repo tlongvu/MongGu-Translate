@@ -102,6 +102,26 @@ def test_segments_keep_ocr_misread_in_same_segment():
     assert len(segs) == 1 and segs[0]['text'] == '我要去修仙！'
 
 
+def test_segments_typewriter_reveal_stays_one_segment():
+    # Chữ hiện dần (typewriter), phụ đề căn giữa: phần đã hiện phải nhập vào câu đầy đủ
+    full = '我要成为名动天下的女修'
+    fd = {}
+    for f in range(30):
+        n = min(len(full), 2 + f // 3)                # mỗi 3 frame hiện thêm 1 chữ
+        fd[str(f)] = [_det(full[:n], 500 - 20 * n)]   # căn giữa quanh x=500
+    segs = op.build_text_segments(fd, fps=25.0, ocr_interval_frames=1)
+    assert len(segs) == 1 and segs[0]['text'] == full
+
+
+def test_segment_index_trim_never_widens():
+    # Cặp sau không được nới lại giới hạn mà cặp trước đã cắt (tránh vẽ 2 câu cùng 1 frame)
+    box = [100, 900, 340, 940]
+    mk = lambda t, a, b: {'text': t, 'start_frame': a, 'end_frame': b, 'bbox': box, 'keyframe_bboxes': []}
+    idx = s._build_segment_index([mk('甲', 0, 11), mk('乙', 5, 9), mk('丙', 12, 30)], 0, 40, {},
+                                 ocr_interval_frames=1)
+    assert '丙' not in [e['text'] for e in idx.get(11, [])]
+
+
 # ── Wrap & chiều cao ──
 
 def test_wrap_and_height():

@@ -1483,6 +1483,12 @@ def run_translation(backend: str = "deepseek"):
 
     elapsed = time.time() - t0
 
+    # Không dịch được câu nào (mạng/quota hỏng hết) → đừng ghi map toàn chữ Trung/rỗng:
+    # render sẽ xóa sạch phụ đề gốc mà không vẽ gì, mà vẫn "thành công".
+    if not any(vi and not re.search(r'[\u4e00-\u9fff]', vi) for vi in translation_map.values()):
+        print("  [ERROR] Không dịch được câu nào — không ghi translation_map.json")
+        return False
+
     # Xuất JSON
     print(f"\n[3/3] Xuất translation_map.json...")
     write_json_atomic(TRANSLATION_MAP_PATH, translation_map)
