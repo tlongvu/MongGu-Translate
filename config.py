@@ -15,7 +15,6 @@ load_dotenv(os.path.join(_PROJECT_ROOT, ".env"))
 # VIDEO
 # ──────────────────────────────────────────────
 VIDEO_PATH = "input.mp4"
-OUTPUT_PREFIX = "output_final"
 TEST_MODE = False
 TEST_FRAMES = 500
 
@@ -239,10 +238,8 @@ USE_TORCH_CUDA = True            # PyTorch CUDA cho resize/blur/cvtColor (~15% G
 GPU_MAX_LOAD = 0.30              # Giới hạn GPU load tối đa (30% → không đơ máy)
 
 # ──────────────────────────────────────────────
-# OUTPUT PATHS (auto-generated)
+# ĐƯỜNG DẪN DỮ LIỆU
 # ──────────────────────────────────────────────
-OCR_DATA_PATH = os.path.join(_SCRIPT_DIR, "ocr_data.json")
-TRANSLATION_MAP_PATH = os.path.join(_SCRIPT_DIR, "translation_map.json")
 # Cache lời gọi LLM (llm.ask_json): khóa = hash prompt đầy đủ → an toàn giữa các video
 LLM_CACHE_PATH = os.path.join(_SCRIPT_DIR, "cache", "llm.sqlite")
 # Dữ liệu theo video (jobs.py): jobs/<tên-video>/…; series dùng chung hồ sơ: series/<tên-bộ>/…

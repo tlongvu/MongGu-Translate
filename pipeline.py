@@ -8,6 +8,9 @@ Usage:
     python pipeline.py --input video.mp4 --only ocr          # chỉ chạy 1 pass
     python pipeline.py --input video.mp4 --skip-existing      # bỏ qua pass đã có output
     python pipeline.py --input video.mp4 --test              # test mode (giới hạn frames)
+    python pipeline.py --input daosiep4.mp4 --series daosi   # tập của một bộ: dùng chung hồ sơ nhân vật
+
+Dữ liệu và video ra của mỗi video nằm trong jobs/<tên-video>/ (vd jobs/daosiep4/daosiep4_vi.mp4).
 
 Mỗi pass chạy như một tiến trình con; nếu một pass lỗi (returncode != 0),
 pipeline dừng ngay (fail-fast) để tránh render bằng dữ liệu hỏng.
@@ -22,11 +25,13 @@ if hasattr(sys.stderr, 'reconfigure'):
     sys.stderr.reconfigure(encoding='utf-8')
 
 import argparse
+import json
 import os
 import subprocess
 import time
 
-from config import OCR_DATA_PATH, TRANSLATION_MAP_PATH, VIDEO_PATH
+from config import VIDEO_PATH
+from jobs import open_job, JobError
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -53,6 +58,7 @@ def run_step(title: str, script: str, extra_args: list) -> float:
 def main():
     parser = argparse.ArgumentParser(description="Monggu Translate - Pipeline (OCR → Dịch → Render)")
     parser.add_argument("--input", "-i", type=str, default=VIDEO_PATH, help="Đường dẫn video gốc")
+    parser.add_argument("--series", "-s", type=str, default=None, help="Tên bộ (series) nếu video là một tập")
     parser.add_argument("--workers", "-w", type=int, default=None, help="Số workers render")
     parser.add_argument("--test", action="store_true", help="Test mode (giới hạn frames)")
     parser.add_argument("--no-audio", action="store_true", help="Render không ghép audio")
@@ -60,7 +66,7 @@ def main():
                         choices=["all", "ocr", "translate", "render"],
                         help="Chỉ chạy 1 pass cụ thể")
     parser.add_argument("--skip-existing", action="store_true",
-                        help="Bỏ qua pass đã có file output (ocr_data.json / translation_map.json)")
+                        help="Bỏ qua pass đã xong trong thư mục job của video")
     args = parser.parse_args()
 
     print("=" * 60)
@@ -68,29 +74,39 @@ def main():
     print("=" * 60)
     print(f"  Input   : {args.input}")
     print(f"  Only    : {args.only}")
+    try:
+        job = open_job(args.input, args.series, create=True)
+    except JobError as e:
+        print(f"  [ERROR] {e}")
+        sys.exit(1)
+    print(f"  Job     : {job.dir}" + (f"  (series: {job.series})" if job.series else ""))
 
     run_ocr = args.only in ("all", "ocr")
     run_tr = args.only in ("all", "translate")
     run_rd = args.only in ("all", "render")
 
     if args.skip_existing:
-        if run_ocr and os.path.exists(OCR_DATA_PATH):
-            print(f"  [SKIP] Đã có {os.path.basename(OCR_DATA_PATH)} → bỏ qua OCR")
-            run_ocr = False
-        if run_tr and os.path.exists(TRANSLATION_MAP_PATH):
-            print(f"  [SKIP] Đã có {os.path.basename(TRANSLATION_MAP_PATH)} → bỏ qua dịch")
+        if run_ocr and os.path.exists(job.ocr_data):
+            with open(job.ocr_data, encoding="utf-8") as f:
+                if json.load(f).get("complete", True):
+                    print("  [SKIP] OCR đã xong cho video này → bỏ qua OCR")
+                    run_ocr = False
+        if run_tr and os.path.exists(job.translation_map):
+            print("  [SKIP] Đã có bản dịch cho video này → bỏ qua dịch")
             run_tr = False
 
     wall0 = time.time()
 
     if run_ocr:
         ocr_args = ["--input", args.input]
+        if args.series:
+            ocr_args += ["--series", args.series]
         if args.test:
             ocr_args.append("--test")
         run_step("Pass 1/3 — OCR Scan", "ocr_pass.py", ocr_args)
 
     if run_tr:
-        run_step("Pass 2/3 — Translation", "translate_pass.py", [])
+        run_step("Pass 2/3 — Translation", "translate_pass.py", ["--input", args.input])
 
     if run_rd:
         rd_args = ["--input", args.input]
@@ -104,6 +120,8 @@ def main():
 
     print("\n" + "=" * 60)
     print(f"  PIPELINE HOÀN TẤT trong {time.time() - wall0:.1f}s")
+    if run_rd:
+        print(f"  Video ra: {job.output}")
     print("=" * 60)
 
 
