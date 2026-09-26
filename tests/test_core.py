@@ -15,6 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import script as s          # noqa: E402
 import translate_pass as tp  # noqa: E402
 import utils                 # noqa: E402
+import ocr_pass as op        # noqa: E402
 
 FP = "nonexistent.ttf"  # → ImageFont.load_default()
 
@@ -65,6 +66,30 @@ def test_interpolate_bbox():
     # Ngoài khoảng → kẹp về đầu/cuối
     assert s.interpolate_bbox(kfs, -5)[0] == 0
     assert s.interpolate_bbox(kfs, 999)[0] == 100
+
+
+# ── Segment OCR (ocr_pass) ──
+
+def _det(text, x1, y1=900, h=40, w_per_char=40):
+    x2 = x1 + w_per_char * len(text)
+    return {'text': text, 'box': [[x1, y1], [x2, y1], [x2, y1 + h], [x1, y1 + h]], 'confidence': 0.99}
+
+
+def test_segments_split_different_lines_same_position():
+    # 2 câu khác nhau, cùng độ dài, cùng chỗ, nối tiếp nhau — lỗi cũ: câu sau "nuốt" câu trước
+    fd = {str(f): [_det('我要去修仙！', 100)] for f in range(0, 3)}
+    fd.update({str(f): [_det('让姓白的后悔', 100)] for f in range(3, 6)})
+    segs = op.build_text_segments(fd, fps=25.0, ocr_interval_frames=1)
+    assert [s['text'] for s in segs] == ['我要去修仙！', '让姓白的后悔']
+    assert segs[0]['end_frame'] == 2 and segs[1]['start_frame'] == 3
+
+
+def test_segments_keep_ocr_misread_in_same_segment():
+    # Bảo vệ: OCR đọc sai 1 chữ ở 1 frame vẫn thuộc cùng segment (luật 2, giống >= 0.7)
+    fd = {str(f): [_det('我要去修仙！', 100)] for f in range(0, 6)}
+    fd['3'] = [_det('我要去修伯！', 100)]
+    segs = op.build_text_segments(fd, fps=25.0, ocr_interval_frames=1)
+    assert len(segs) == 1 and segs[0]['text'] == '我要去修仙！'
 
 
 # ── Wrap & chiều cao ──

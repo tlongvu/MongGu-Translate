@@ -21,7 +21,6 @@ os.environ["FLAGS_use_mkldnn"] = "0"
 
 import cv2
 import numpy as np
-from paddleocr import PaddleOCR
 import time
 import json
 import argparse
@@ -103,9 +102,8 @@ def build_text_segments(frame_detections: dict, fps: float, ocr_interval_frames:
                 # 2. Khớp tương đối (fuzzy) và có độ chồng chéo trung bình
                 elif texts_are_similar(seg['text'], txt, 0.7) and iou > 0.3:
                     is_match = True
-                # 3. Trùng khớp hoàn toàn về vị trí (loại trừ OCR nhận diện sai chính tả)
-                elif iou > 0.6:
-                    is_match = True
+                # KHÔNG gộp chỉ vì trùng vị trí: câu phụ đề nối tiếp luôn ở cùng chỗ, gộp theo vị trí
+                # làm câu sau "nuốt" câu trước (đo trên dữ liệu thật: -90% frame vẽ sai câu).
 
                 if is_match:
                     matched_seg = seg
@@ -419,6 +417,9 @@ def run_ocr_pass(video_path: str, test_mode: bool = False, test_frames: int = 30
     # Nếu dùng GPU, giới hạn số workers xuống 1 hoặc 2 để tránh tràn VRAM GPU (GTX 1650)
     current_num_workers = 1 if USE_GPU else NUM_WORKERS
     print(f"\n[2/3] Khởi tạo {current_num_workers} PaddleOCR workers (use_gpu={USE_GPU})...")
+
+    # Import lười: PaddleOCR nặng (~15s); để module import nhanh cho test/tool dùng build_text_segments
+    from paddleocr import PaddleOCR
 
     # Tạo 1 engine riêng cho mỗi worker để tránh GIL contention
     ocr_engines = []
