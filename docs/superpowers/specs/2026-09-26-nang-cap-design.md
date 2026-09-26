@@ -69,8 +69,8 @@ Mọi mục đều đã đọc code. Mục gắn **[dữ liệu]** đã đối c
 |---|---|---|---|
 | **A** | Đầu ra đúng, hoặc báo lỗi rõ ✅ | 1–4 | Lỗi người xem thấy ngay; diff nhỏ; kiểm chứng offline trên dữ liệu thật |
 | **B** | Dịch theo cốt truyện, đúng nhân vật, có cache: B1 lõi LLM + cache → B2 thư mục job + series → B3 dịch 3 bước | 5–11 | Yêu cầu chính của user (2026-09-26): hết sai xưng hô, nhầm người nói, sai ý theo cốt truyện |
-| **D** | Lõi media chung + reel gốc | 12–13 | Cần lõi LLM (B1) để viết kịch bản |
-| **E** | Dọn dẹp, tài liệu, tăng tốc OCR | 14–15 | Làm cuối, khi cấu trúc đã ổn |
+| **D** | Lõi media chung + reel gốc ✅ (xem mục 7) | 12–13 | Cần lõi LLM (B1) để viết kịch bản |
+| **E** | Dọn dẹp, tài liệu, tăng tốc OCR ✅ (xem mục 7) | 14–15 | Làm cuối, khi cấu trúc đã ổn |
 
 Mỗi dự án con đi đủ vòng spec → plan → code. Tài liệu này chi tiết A. B có spec riêng: `2026-09-26-dich-theo-cot-truyen-design.md`. Dự án con C cũ (lõi LLM) đã gộp vào B, thành B1.
 
@@ -138,3 +138,21 @@ Test cũ và mới đều qua, các kiểm chứng trên đúng như mô tả, m
 - Test chạy offline. Không gọi API thật (tốn quota) khi chưa được user cho phép.
 - Không xóa dữ liệu hay media của user; chỉ liệt kê để user tự quyết.
 - Không thêm: giao diện web, database, Docker, hệ plugin.
+
+## 7. Kết quả D, E và mục 10 (đã đo, không đoán)
+
+**Mục 10 — lọc chữ.** Đo trên `ocr_data.json` thật và OCR mẫu 15 video nguồn (901 frame, 1.279 chữ):
+- `SUPPRESS_TEXTS` khớp chuỗi con: **giữ**. Luật này bắt ~2.300 biến thể OCR của watermark bay "原创@哈加密" (chạy khắp khung hình, nên không lọc theo vị trí được). Thoại bị ẩn nhầm chỉ ~5 keyframe, đều là box OCR dính watermark với thoại. Luật chặt hơn thì để lọt chính watermark ("原文《香蕉长生》" có 6.831 keyframe).
+- `WATERMARK_PATTERNS`: **giữ**. Chỉ bắt 2 chữ, đều là rác thật. "关注", "收藏", "小鸡" không bắt nhầm câu nào.
+- Luật "chữ Trung lẫn > 30% Latin": **bỏ**. Nó bỏ 2 câu thoại thật ("就是这个feel", "多惬意，skr!"), và để nguyên 9 mảnh nhãn meme thay vì xóa. Giờ các chữ đó đi vào B3: bước chuẩn hóa/dịch coi nhãn là rác, render xóa; thoại thì được dịch.
+
+**D — reel gốc.**
+- ✅ `--idea`: LLM viết kịch bản chỉ từ thư viện nhân vật; không bao giờ ghi đè kịch bản đã có.
+- Mục 13 "không chạy trên Windows": **sai**. Pillow tự tìm DejaVu trong `C:\Windows\Fonts`.
+- Encode CPU: đủ nhanh cho reel ~18 s, không đổi.
+- Mục 12 "lõi media chung": **không làm**. Phần còn trùng là 3 hàm ffprobe nhỏ, trả dữ liệu khác nhau, nằm trong 3 tool chạy độc lập. Vẽ phụ đề và vẽ caption reel có bố cục khác nhau. Gộp lại tốn rủi ro hơn lợi. Lõi thật sự dùng chung là `llm.py` (gọi LLM + cache).
+
+**E — dọn dẹp.**
+- Mục 14 (OCR 1 luồng): đo 500 frame, 1 worker 45,7 s so với 4 worker 47,6 s. Paddle CPU vốn đã đa luồng, nên giữ 1 worker; chỉ sửa cách dò GPU và log.
+- Mục 15: README, `requirements.txt`, thư mục `experiments/`; xóa code chết (`schemas.py`, `create_text_mask`, `get_next_output_path`).
+- `TIKTOK_PASS_MODE`: để user quyết.
