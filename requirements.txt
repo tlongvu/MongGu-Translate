@@ -1,0 +1,21 @@
+# Monggu Translate — thư viện cho pipeline dịch (Python 3.10). Cài: pip install -r requirements.txt
+# Ngoài ra cần ffmpeg trong PATH (có h264_nvenc nếu máy có GPU NVIDIA).
+
+# OCR — bản CPU. Muốn OCR bằng GPU thì thay paddlepaddle bằng paddlepaddle-gpu hợp với CUDA của máy.
+paddlepaddle==2.6.2
+paddleocr==2.7.0.3
+
+# Video / ảnh (paddle 2.6 + opencv 4.6 cần numpy 1.x)
+opencv-python>=4.6
+numpy<2
+Pillow>=10
+
+# Dịch bằng LLM: Gemini + DeepSeek (DeepSeek dùng SDK openai)
+google-genai>=1.0
+openai>=1.0
+python-dotenv
+
+# Tùy chọn:
+#   torch          — script.py resize/blur bằng CUDA nếu có (không có vẫn chạy)
+#   demucs scipy   — audio_tools.py tách giọng / nhạc nền
+#   edge-tts       — story_engine lồng tiếng
