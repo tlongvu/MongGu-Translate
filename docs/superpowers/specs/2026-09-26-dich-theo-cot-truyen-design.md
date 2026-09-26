@@ -201,3 +201,79 @@ Không chạy `translate_pass.py` thật (sẽ gọi API). Trường hợp thi�
 - **Test `run_translation`** trên job tạm, với `ask_json` giả.
 - **Render thử trọn vẹn** trên job tạm (`JOBS_DIR` trỏ vào scratch): output nằm trong job, không còn file tạm, có audio.
 - **`script.py` với video không có job** → exit 1 kèm hướng dẫn.
+
+## 9. B3 chi tiết — Dịch theo cốt truyện
+
+### Dữ liệu
+
+- **`open_job`:**
+  - bỏ `profiles`, `glossary`, `translation_map`;
+  - thêm `story` (`series/<bộ>/story.json`, hoặc `jobs/<tên>/story.json` cho video lẻ);
+  - thêm `lines` (`jobs/<tên>/lines.json`).
+- **`lines.json`** là danh sách, mỗi phần tử ứng với một segment trong `ocr_data["text_segments"]`; `id` là chỉ số của segment đó:
+  ```json
+  {"id": 812, "start": 1025, "end": 1073, "zh": "我要去修仙！", "loai": "thoai",
+   "noi": "tieu_thu", "nghe": "yiyi", "chac": 0.9, "vi": "Bản tiểu thư muốn đi tu tiên!"}
+  ```
+  - **`loai`:**
+    - `thoai`: mọi chữ có nghĩa, kể cả tiêu đề/chú thích (khi đó `noi` = `?`);
+    - `nhan`: nhãn tên nhân vật trên màn hình;
+    - `rac`: `zh` rỗng sau chuẩn hóa → render xóa mà không vẽ.
+  - **Giữ và tính lại:**
+    - `noi`/`nghe`/`chac` chỉ điền khi thiếu, nên sửa tay được giữ. Khi chạy lại, dữ liệu cũ chỉ được giữ nếu cùng `id` và cùng `zh` (OCR chạy lại thì `id` đổi).
+    - `vi` **luôn được tính lại** từ (`zh`, `noi`, `nghe`, hồ sơ). Nhờ cache, cửa sổ nào không đổi thì không tốn gì.
+    - Sửa tay một câu thì ghi vào **`vi_sua`**; render luôn ưu tiên `vi_sua`.
+- **`story.json`:** như mục 4, thêm `"nhan": {"<chữ nhãn>": "<id nhân vật>"}`.
+- **Chữ hiện lâu:** chữ có tổng thời lượng ≥ 3 giây và dài ≤ 8 ký tự.
+  - Đây là ứng viên nhãn tên, tiêu đề, địa danh.
+  - Trên dữ liệu thật: 113 chữ, phần lớn là nhãn tên (`我` ×83, `岑不渡` ×25, `孙晴` ×19…).
+  - Bước 1 quyết định chữ nào là nhãn của nhân vật nào.
+  - Với mỗi dòng thoại, **"trên màn hình"** = các nhân vật có nhãn đang hiện trong khoảng thời gian của dòng đó.
+
+### Luồng (viết lại lõi `translate_pass.py`)
+
+0. **Chuẩn hóa** như hiện tại (`normalize_texts`).
+1. **`build_lines`:** mỗi segment một dòng, sắp theo `start`. Ghép với `lines.json` cũ để giữ `noi`/`nghe`/`chac`/`vi_sua`.
+2. **`build_story`** — bước 1, một lời gọi:
+   - **Vào:** toàn bộ dòng thoại (bỏ các dòng trùng liên tiếp), danh sách chữ hiện lâu, hồ sơ đã có.
+   - **Trộn:** chỉ **thêm** khóa mới, không sửa khóa cũ.
+   - **Bỏ qua lời gọi** khi video lẻ đã có `story.json`.
+3. **Phân loại:** gắn `loai`, tính "trên màn hình" cho từng dòng.
+4. **`attribute_speakers`** — bước 2, cửa sổ 200 dòng thoại kèm 20 dòng ngữ cảnh trước:
+   - chỉ hỏi những dòng còn thiếu `noi`;
+   - `id` nhân vật lạ → `?`;
+   - thiếu kết quả → hỏi lại một lần; vẫn thiếu thì `?` với `chac` = 0 (**không dừng**, vì bước dịch vẫn làm được).
+5. **`translate_lines`** — bước 3, cửa sổ 120 dòng (`thoai` + `nhan`) kèm 15 dòng đã dịch ngay trước:
+   - **Prompt gồm:**
+     - tóm tắt, thể loại;
+     - **chỉ** các nhân vật, cặp xưng hô và tên riêng xuất hiện trong cửa sổ.
+   - **Dòng:** `[id] (A→B) 中文` hoặc `[id] (Nhãn) 中文`.
+   - **Cặp xưng hô:** dùng `A>B`; không có thì dùng `A>*`.
+   - **Thiếu câu:** hỏi lại một lần; vẫn thiếu thì `LLMError` (exit 1).
+6. **`qa_lines`** — bước 4, cửa sổ 150:
+   - soát sai xưng hô so với bảng, nhầm chủ ngữ, sai ý so với tóm tắt;
+   - chỉ nhận `id` thuộc cửa sổ.
+7. **Ghi file:** ghi `lines.json`, và `story.json` nếu có thay đổi (ghi atomic). Thôi ghi `translation_map.json`.
+
+**Xóa:** phase 1–4 cũ (`build_ordered_transcript`, hồ sơ nhân vật 90 dòng, `translate_script`, `qa_consistency_pass`, mượn bản dịch biến thể), prompt `TRANSLATION_*` trong `config.py`, glossary theo job.
+
+### Render
+
+- Đọc `lines.json` thay cho `translation_map.json`.
+- Mỗi segment mang `id`, và `_build_segment_index` tra `vi_sua or vi` theo `id`. Nhờ vậy cùng một câu tiếng Trung ở hai lần xuất hiện có thể có hai bản dịch khác nhau.
+- Chữ OCR thô ở P1/P3 dùng bảng phụ `{chữ của segment: bản dịch lần xuất hiện đầu}`, không có thì `""`.
+
+### Kiểm chứng
+
+- **Test với `ask_json` giả:**
+  - `build_lines` giữ sửa tay;
+  - nhận diện chữ hiện lâu;
+  - hồ sơ series chỉ được bổ sung;
+  - mỗi dòng được gán/dịch đúng một lần;
+  - chỉ các cặp xưng hô có trong cửa sổ mới vào prompt;
+  - dịch thiếu → hỏi lại → `LLMError`;
+  - render tra bản dịch theo `id` segment.
+- **Chạy thử** trên dữ liệu thật với LLM giả.
+- **Chạy thật (xin phép user trước):**
+  - OCR đầy đủ `newvideo.mp4` (video mèo chuối có nhãn tên, khoảng 2 phút), rồi dịch thật bằng Gemini, rồi render;
+  - Claude đọc `lines.json`, đối chiếu tiếng Trung / người nói / bản dịch, rồi báo cáo bằng ví dụ cụ thể.
