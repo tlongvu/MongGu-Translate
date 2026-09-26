@@ -132,6 +132,17 @@ def test_translation_cache_roundtrip():
             os.remove(tmp)
 
 
+def test_run_translation_fails_without_input():
+    orig = tp.load_ocr_data
+    try:
+        tp.load_ocr_data = lambda: None                   # thiếu ocr_data.json
+        assert tp.run_translation("google") is False
+        tp.load_ocr_data = lambda: {"unique_texts": []}   # OCR không ra chữ nào
+        assert tp.run_translation("google") is False
+    finally:
+        tp.load_ocr_data = orig
+
+
 # ── Ghi JSON an toàn (utils) ──
 
 def test_write_json_atomic_keeps_old_file_on_error():

@@ -1373,7 +1373,7 @@ def _translate_isolated(texts_to_translate: list, glossary: dict, backend: str) 
 
 
 def run_translation(backend: str = "deepseek"):
-    """Chạy dịch thuật, xuất translation_map.json."""
+    """Chạy dịch thuật, xuất translation_map.json. Trả về True nếu thành công."""
     print("=" * 55)
     print("  Monggu Translate - Pass 2: Translation")
     print("=" * 55)
@@ -1382,14 +1382,14 @@ def run_translation(backend: str = "deepseek"):
     print("\n[1/3] Đọc dữ liệu...")
     ocr_data = load_ocr_data()
     if not ocr_data:
-        return
+        return False
 
     glossary = load_glossary()
     unique_texts = ocr_data.get("unique_texts", [])
 
     if not unique_texts:
-        print("  [WARN] Không có text nào để dịch!")
-        return
+        print("  [ERROR] Không có text nào để dịch!")
+        return False
 
     print(f"  Tổng cộng {len(unique_texts)} câu ban đầu")
 
@@ -1436,8 +1436,8 @@ def run_translation(backend: str = "deepseek"):
     print(f"  => Sau khi clean, còn lại {len(texts_to_translate)} câu cần dịch (thời gian: {time.time() - t_start_norm:.1f}s)")
 
     if not texts_to_translate:
-        print("  [WARN] Tất cả text đều bị lọc thành rác. Không có gì để dịch!")
-        return
+        print("  [ERROR] Tất cả text đều bị lọc thành rác. Không có gì để dịch!")
+        return False
 
     # ── Dịch: ưu tiên CONTEXTUAL (Phase 1-4) cho backend LLM (gemini/deepseek) ──
     text_segments = ocr_data.get("text_segments", [])
@@ -1503,6 +1503,8 @@ def run_translation(backend: str = "deepseek"):
         print(f"  [{zh}]")
         print(f"  → {vi}\n")
 
+    return True
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Monggu Translate - Translation Pass")
@@ -1511,5 +1513,5 @@ if __name__ == "__main__":
                         help="Backend dịch thuật (gemini, deepseek, freemodel, nvidia hoặc google)")
     args = parser.parse_args()
 
-    run_translation(backend=args.backend)
+    sys.exit(0 if run_translation(backend=args.backend) else 1)
 
