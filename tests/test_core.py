@@ -146,31 +146,61 @@ def test_layout_cache_hits():
 
 # ── Cache dịch (translate_pass) ──
 
-def test_translation_cache_roundtrip():
-    orig = tp.TRANSLATION_CACHE_PATH
-    tmp = os.path.join(tempfile.gettempdir(), "_monggu_test_cache.json")
-    try:
-        tp.TRANSLATION_CACHE_PATH = tmp
-        if os.path.exists(tmp):
-            os.remove(tmp)
-        assert tp.load_translation_cache() == {}, "Cache rỗng khi chưa có file"
-        tp.save_translation_cache({"你好": "Xin chào"})
-        assert tp.load_translation_cache().get("你好") == "Xin chào"
-    finally:
-        tp.TRANSLATION_CACHE_PATH = orig
-        if os.path.exists(tmp):
-            os.remove(tmp)
-
-
 def test_run_translation_fails_without_input():
     orig = tp.load_ocr_data
     try:
         tp.load_ocr_data = lambda: None                   # thiếu ocr_data.json
-        assert tp.run_translation("google") is False
+        assert tp.run_translation() is False
         tp.load_ocr_data = lambda: {"unique_texts": []}   # OCR không ra chữ nào
-        assert tp.run_translation("google") is False
+        assert tp.run_translation() is False
     finally:
         tp.load_ocr_data = orig
+
+
+def _fake_llm(first_window_reply):
+    """ask_json giả cho Phase 1-4: hồ sơ {}, QA {}, hỏi lại dòng thiếu → dịch dòng 3."""
+    calls = []
+
+    def fake(system, user, temperature=0.1):
+        calls.append(user)
+        if 'CÂU THOẠI THEO THỨ TỰ' in user or 'KỊCH BẢN:' in user:  # Phase 3 hồ sơ / Phase 4 QA
+            return {}
+        if 'CHỈ dịch các dòng' in user:
+            return {"3": "Đi thôi"}
+        return first_window_reply
+    return fake, calls
+
+
+def _run_contextual(fake, segs_texts, norm, texts):
+    segs = [{'text': t, 'start_frame': i * 10, 'end_frame': i * 10 + 5} for i, t in enumerate(segs_texts)]
+    orig_ask, orig_prof = tp.ask_json, tp.CHAR_PROFILES_PATH
+    tmp = tempfile.mkdtemp()
+    try:
+        tp.ask_json = fake
+        tp.CHAR_PROFILES_PATH = os.path.join(tmp, "profiles.json")
+        return tp.translate_contextual(segs, norm, texts, {})
+    finally:
+        tp.ask_json, tp.CHAR_PROFILES_PATH = orig_ask, orig_prof
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_translate_contextual_retries_missing_lines_and_borrows_variants():
+    fake, calls = _fake_llm({"1": "Xin chào", "2": "Ta muốn tu tiên!"})  # lần đầu bỏ sót dòng 3
+    norm = {'你好': '你好', '我要去修仙！': '我要去修仙！', '走吧': '走吧', '我要去修仙': '我要去修仙'}
+    out = _run_contextual(fake, ['你好', '我要去修仙！', '走吧'], norm, ['你好', '我要去修仙！', '走吧', '我要去修仙'])
+    assert out['走吧'] == 'Đi thôi', "Dòng bị bỏ sót phải được hỏi lại"
+    assert sum('CHỈ dịch các dòng: 3' in u for u in calls) == 1
+    assert out['我要去修仙'] == 'Ta muốn tu tiên!', "Biến thể OCR mượn bản dịch dòng giống nhất"
+
+
+def test_translate_contextual_raises_when_lines_still_missing():
+    fake, _ = _fake_llm({"1": "Xin chào"})  # hỏi lại cũng chỉ ra dòng 3, dòng 2 vẫn thiếu
+    try:
+        _run_contextual(fake, ['你好', '走吧', '好的'], {'你好': '你好', '走吧': '走吧', '好的': '好的'},
+                        ['你好', '走吧', '好的'])
+        raise AssertionError("Phải ném LLMError khi vẫn thiếu dòng")
+    except tp.LLMError:
+        pass
 
 
 # ── Ghi JSON an toàn (utils) ──

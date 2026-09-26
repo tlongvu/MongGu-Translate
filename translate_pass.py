@@ -1,10 +1,10 @@
 """
-Monggu Translate - Pass 2: Dịch thuật bằng Gemini
-Load ocr_data.json → gửi Gemini 1 lần → xuất translation_map.json
+Monggu Translate - Pass 2: Dịch theo ngữ cảnh kịch bản
+Load ocr_data.json → chuẩn hóa chữ OCR → dịch theo kịch bản (Phase 1-4) → xuất translation_map.json
+Mọi lời gọi LLM qua llm.ask_json (Gemini, dự phòng DeepSeek; có cache → chạy lại không tốn lại).
 
 Usage:
-    python translate_pass.py                    # Dịch bằng Gemini (mặc định)
-    python translate_pass.py --backend google   # Fallback dùng Google Translate
+    python translate_pass.py
 """
 
 import sys
@@ -20,6 +20,7 @@ import os
 import re
 import time
 import argparse
+from difflib import get_close_matches
 
 from config import (
     GEMINI_API_KEY, GEMINI_API_KEYS, DEEPSEEK_API_KEY, GLOSSARY_PATH,
@@ -29,6 +30,7 @@ from config import (
     NORMALIZATION_SYSTEM_PROMPT,
     OCR_DATA_PATH, TRANSLATION_MAP_PATH, TRANSLATION_CACHE_PATH,
 )
+from llm import ask_json, LLMError
 from utils import write_json_atomic
 
 
@@ -840,6 +842,22 @@ def translate_with_google(unique_texts: list, glossary: dict) -> dict:
     return translation_map
 
 
+def normalize_texts(unique_texts: list, batch_size: int = 150) -> dict:
+    """Làm sạch chữ OCR bằng LLM: {raw: cleaned, hoặc "" nếu là rác}.
+    Câu model bỏ sót hoặc trả giá trị không phải chuỗi → giữ nguyên chữ gốc."""
+    mapping = {}
+    total = (len(unique_texts) + batch_size - 1) // batch_size
+    for b, start in enumerate(range(0, len(unique_texts), batch_size), 1):
+        batch = unique_texts[start:start + batch_size]
+        print(f"    Batch {b}/{total} ({len(batch)} câu)...")
+        got = ask_json(NORMALIZATION_SYSTEM_PROMPT, json.dumps(batch, ensure_ascii=False), temperature=0.0)
+        got = got if isinstance(got, dict) else {}
+        for zh in batch:
+            v = got.get(zh, zh)
+            mapping[zh] = v if isinstance(v, str) else zh
+    return mapping
+
+
 # ──────────────────────────────────────────────
 # CONTEXTUAL TRANSLATION (Phase 1-4): dịch theo ngữ cảnh kịch bản
 #   Phase 1: dịch cả transcript theo thứ tự thời gian, có ngữ cảnh
@@ -1124,8 +1142,8 @@ def infer_character_profiles(transcript: list, glossary: dict) -> dict:
             + "\n\nCÂU THOẠI THEO THỨ TỰ (hãy tự nhận diện nhân vật chính từ đây):\n"
             + "\n".join(sample))
     try:
-        profiles = _llm_json(_PROFILE_SYS, user, temperature=0.0)
-    except Exception as e:
+        profiles = ask_json(_PROFILE_SYS, user, temperature=0.0)
+    except LLMError as e:
         print(f"  [Phase 3][WARN] Suy luận hồ sơ nhân vật lỗi: {e}")
         return {}
     if not isinstance(profiles, dict):
@@ -1197,19 +1215,30 @@ def translate_script(transcript: list, profiles: dict, glossary: dict,
         if not chunk:
             break
         user = "\n".join(f"[{it['idx']}] {_line_tag(it)}{it['cleaned']}" for it in chunk)
-        try:
-            data = _llm_json(sys_prompt, user, temperature=0.1)
-        except Exception as e:
-            print(f"  [Phase 1][WARN] Dịch cửa sổ {start} lỗi: {e}")
-            data = None
-        if isinstance(data, dict):
-            for it in chunk:
-                vi = data.get(str(it["idx"]))
-                if vi:
-                    vi_by_idx[it["idx"]] = vi.strip()
+        _take_translations(ask_json(sys_prompt, user, temperature=0.1), chunk, vi_by_idx)
+        missing = [it for it in chunk if it["idx"] not in vi_by_idx]
+        if missing:
+            # Hỏi lại riêng các dòng thiếu (prompt khác → khóa cache khác), vẫn kèm cả cửa sổ làm ngữ cảnh
+            ids = ", ".join(str(it["idx"]) for it in missing)
+            _take_translations(ask_json(sys_prompt, user + f"\n\nCHỈ dịch các dòng: {ids}", temperature=0.1),
+                               missing, vi_by_idx)
         if start + window >= n:
             break
+    missing = [it["idx"] for it in transcript if it["idx"] not in vi_by_idx]
+    if missing:
+        raise LLMError(f"Model bỏ sót {len(missing)} dòng kể cả khi hỏi lại: {missing[:20]}")
     return vi_by_idx
+
+
+def _take_translations(data, items: list, vi_by_idx: dict) -> None:
+    """Lấy bản dịch {"idx": vi} cho đúng các dòng của cửa sổ.
+    Chuỗi rỗng = model cố ý để trống (rác) → vẫn tính là đã trả lời; thiếu key mới là bỏ sót."""
+    if not isinstance(data, dict):
+        return
+    for it in items:
+        vi = data.get(str(it["idx"]))
+        if isinstance(vi, str):
+            vi_by_idx[it["idx"]] = vi.strip()
 
 
 def qa_consistency_pass(transcript: list, vi_by_idx: dict, profiles: dict,
@@ -1220,6 +1249,7 @@ def qa_consistency_pass(transcript: list, vi_by_idx: dict, profiles: dict,
     fixed_total = 0
     for start in range(0, n, window):
         chunk = transcript[start:start + window]
+        window_ids = {it["idx"] for it in chunk}
         rows = []
         for it in chunk:
             vi = vi_by_idx.get(it["idx"], "")
@@ -1231,8 +1261,8 @@ def qa_consistency_pass(transcript: list, vi_by_idx: dict, profiles: dict,
             continue
         user = "HỒ SƠ NHÂN VẬT:\n" + prof_str + "\n\nKỊCH BẢN:\n" + "\n".join(rows)
         try:
-            fixes = _llm_json(_QA_SYS, user, temperature=0.0)
-        except Exception as e:
+            fixes = ask_json(_QA_SYS, user, temperature=0.0)
+        except LLMError as e:
             print(f"  [Phase 4][WARN] QA cửa sổ {start} lỗi: {e}")
             fixes = None
         if isinstance(fixes, dict):
@@ -1241,7 +1271,7 @@ def qa_consistency_pass(transcript: list, vi_by_idx: dict, profiles: dict,
                     idx = int(k)
                 except (ValueError, TypeError):
                     continue
-                if v and isinstance(v, str):
+                if idx in window_ids and v and isinstance(v, str):
                     vi_by_idx[idx] = v.strip()
                     fixed_total += 1
     if fixed_total:
@@ -1253,11 +1283,8 @@ def translate_contextual(text_segments: list, normalized_mapping: dict,
                          texts_to_translate: list, glossary: dict) -> dict:
     """
     Orchestrator Phase 1-4. Trả về {cleaned_zh: vi} phủ tối đa texts_to_translate.
-    Ném exception nếu hỏng nặng → caller fallback sang dịch rời rạc.
+    Ném LLMError nếu LLM hỏng / vẫn bỏ sót dòng → caller dừng (exit 1); phần đã xong nằm trong cache.
     """
-    if not (GEMINI_API_KEYS or DEEPSEEK_API_KEY or FREEMODEL_API_KEY):
-        raise RuntimeError("Không có LLM provider (Gemini/DeepSeek/Freemodel) cho dịch ngữ cảnh")
-
     print("  [Phase 1] Dựng transcript theo thứ tự thời gian...")
     transcript = build_ordered_transcript(text_segments, normalized_mapping, glossary)
     if not transcript:
@@ -1270,8 +1297,6 @@ def translate_contextual(text_segments: list, normalized_mapping: dict,
 
     print("  [Phase 1+2] Dịch kịch bản theo ngữ cảnh + người nói...")
     vi_by_idx = translate_script(transcript, profiles, glossary)
-    if not vi_by_idx:
-        raise RuntimeError("Phase 1 không trả về bản dịch nào")
 
     print("  [Phase 4] Rà soát nhất quán...")
     qa_consistency_pass(transcript, vi_by_idx, profiles)
@@ -1283,16 +1308,19 @@ def translate_contextual(text_segments: list, normalized_mapping: dict,
         if vi:
             cleaned_to_vi[it["cleaned"]] = vi
 
-    # Phủ nốt các câu nằm trong unique_texts nhưng không có trong transcript (segment)
+    # Câu sạch không có trong transcript = biến thể OCR của một dòng đã dịch → mượn bản dịch dòng
+    # giống nhất (giữ đúng xưng hô theo ngữ cảnh), không dịch rời rạc.
     leftover = [t for t in texts_to_translate if t not in cleaned_to_vi]
     if leftover:
-        print(f"  [Bổ sung] {len(leftover)} câu ngoài transcript -> dịch rời rạc...")
-        if _active_backend == "freemodel":
-            iso_backend = "freemodel"
-        else:
-            iso_backend = "deepseek" if _gemini_dead else "gemini"
-        iso = _translate_isolated(leftover, glossary, iso_backend)
-        cleaned_to_vi.update(iso or {})
+        known = list(cleaned_to_vi)
+        borrowed = 0
+        for t in leftover:
+            match = get_close_matches(t, known, n=1, cutoff=0.7)
+            if match:
+                cleaned_to_vi[t] = cleaned_to_vi[match[0]]
+                borrowed += 1
+        print(f"  [Bổ sung] {len(leftover)} biến thể ngoài transcript: {borrowed} mượn bản dịch dòng "
+              f"giống nhất, {len(leftover) - borrowed} để trống")
 
     return cleaned_to_vi
 
@@ -1372,7 +1400,7 @@ def _translate_isolated(texts_to_translate: list, glossary: dict, backend: str) 
     return {**cache_hits, **cleaned_translation_map}
 
 
-def run_translation(backend: str = "deepseek"):
+def run_translation():
     """Chạy dịch thuật, xuất translation_map.json. Trả về True nếu thành công."""
     print("=" * 55)
     print("  Monggu Translate - Pass 2: Translation")
@@ -1391,95 +1419,38 @@ def run_translation(backend: str = "deepseek"):
         print("  [ERROR] Không có text nào để dịch!")
         return False
 
-    print(f"  Tổng cộng {len(unique_texts)} câu ban đầu")
-
-    global _gemini_dead, _active_backend
-    _active_backend = backend
-    if backend in ("deepseek", "nvidia") or not GEMINI_API_KEYS:
-        _gemini_dead = True
-
-    # Normalize Pass — chọn provider theo backend
-    print("\n[1.5/3] Normalize Texts...")
-    t_start_norm = time.time()
-    
-    if backend == "nvidia":
-        normalized_mapping = normalize_texts_with_nvidia(unique_texts)
-        if not normalized_mapping:
-            print("\n  [FALLBACK] Làm sạch bằng Nvidia thất bại, chuyển sang DeepSeek...")
-            normalized_mapping = normalize_texts_with_deepseek(unique_texts)
-        if not normalized_mapping:
-            normalized_mapping = normalize_texts_with_gemini(unique_texts)
-    elif backend == "freemodel":
-        normalized_mapping = normalize_texts_with_freemodel(unique_texts)
-        if not normalized_mapping:
-            print("\n  [FALLBACK] Làm sạch bằng Freemodel thất bại, chuyển sang DeepSeek...")
-            normalized_mapping = normalize_texts_with_deepseek(unique_texts)
-        if not normalized_mapping:
-            normalized_mapping = normalize_texts_with_gemini(unique_texts)
-    elif backend == "gemini" and GEMINI_API_KEYS and not _gemini_dead:
-        normalized_mapping = normalize_texts_with_gemini(unique_texts)
-        if not normalized_mapping:
-            print("\n  [FALLBACK] Làm sạch bằng Gemini thất bại, chuyển sang DeepSeek...")
-            normalized_mapping = normalize_texts_with_deepseek(unique_texts)
-    else:
-        normalized_mapping = normalize_texts_with_deepseek(unique_texts)
-        if not normalized_mapping:
-            normalized_mapping = normalize_texts_with_gemini(unique_texts)
-    
-    # Lọc ra những text đã clean và có ý nghĩa
-    texts_to_translate_dict = {}
-    for raw, cleaned in normalized_mapping.items():
-        if cleaned: # Bỏ qua những chuỗi rỗng do lọc rác
-            texts_to_translate_dict[cleaned] = raw
-            
-    texts_to_translate = list(texts_to_translate_dict.keys())
-    print(f"  => Sau khi clean, còn lại {len(texts_to_translate)} câu cần dịch (thời gian: {time.time() - t_start_norm:.1f}s)")
-
-    if not texts_to_translate:
-        print("  [ERROR] Tất cả text đều bị lọc thành rác. Không có gì để dịch!")
+    text_segments = ocr_data.get("text_segments", [])
+    if not text_segments:
+        print("  [ERROR] ocr_data.json thiếu text_segments — hãy chạy lại OCR.")
         return False
 
-    # ── Dịch: ưu tiên CONTEXTUAL (Phase 1-4) cho backend LLM (gemini/deepseek) ──
-    text_segments = ocr_data.get("text_segments", [])
-    t0 = time.time()
-    cleaned_translation_map = None
-    has_llm = bool(GEMINI_API_KEYS or DEEPSEEK_API_KEY or FREEMODEL_API_KEY or NVIDIA_API_KEY)
+    print(f"  Tổng cộng {len(unique_texts)} câu ban đầu")
 
-    if backend in ("gemini", "deepseek", "freemodel", "nvidia") and text_segments and has_llm:
+    try:
+        print("\n[1.5/3] Normalize Texts...")
+        t_start_norm = time.time()
+        normalized_mapping = normalize_texts(unique_texts)
+
+        # Câu đã làm sạch, có nghĩa, bỏ trùng (giữ thứ tự)
+        texts_to_translate = list(dict.fromkeys(c for c in normalized_mapping.values() if c))
+        print(f"  => Sau khi clean, còn lại {len(texts_to_translate)} câu cần dịch "
+              f"(thời gian: {time.time() - t_start_norm:.1f}s)")
+        if not texts_to_translate:
+            print("  [ERROR] Tất cả text đều bị lọc thành rác. Không có gì để dịch!")
+            return False
+
         print(f"\n[2/3] Dịch theo NGỮ CẢNH kịch bản (Phase 1-4) — {len(text_segments)} segment...")
-        try:
-            cleaned_translation_map = translate_contextual(
-                text_segments, normalized_mapping, texts_to_translate, glossary)
-        except Exception as e:
-            print(f"  [FALLBACK] Dịch ngữ cảnh lỗi ({e}); quay về dịch rời rạc...")
-            cleaned_translation_map = None
-    elif backend in ("gemini", "deepseek", "freemodel", "nvidia") and not text_segments:
-        print("\n[2/3] [WARN] Không có text_segments → không dịch ngữ cảnh được, dùng dịch rời rạc.")
+        t0 = time.time()
+        cleaned_translation_map = translate_contextual(
+            text_segments, normalized_mapping, texts_to_translate, glossary)
+    except (LLMError, RuntimeError) as e:
+        print(f"  [ERROR] Dịch thất bại: {e}")
+        print("  Phần đã dịch xong nằm trong cache/llm.sqlite — chạy lại sẽ làm tiếp, không tốn lại.")
+        return False
 
-    if not cleaned_translation_map:
-        print(f"\n[2/3] Dịch rời rạc (backend: {backend})...")
-        cleaned_translation_map = _translate_isolated(texts_to_translate, glossary, backend)
-
-    # Lưu kết quả ngữ cảnh vào cache để lần sau / tool khác tái dùng
-    if cleaned_translation_map:
-        _cache = load_translation_cache()
-        _n = 0
-        for zh, vi in cleaned_translation_map.items():
-            if vi and vi != zh and _cache.get(zh) != vi:
-                _cache[zh] = vi
-                _n += 1
-        if _n:
-            save_translation_cache(_cache)
-            print(f"  [CACHE] Cập nhật {_n} bản dịch vào cache")
-
-    # Reconstruct final translation_map matching RAW texts
-    translation_map = {}
-    for raw, cleaned in normalized_mapping.items():
-        if cleaned and cleaned_translation_map and cleaned in cleaned_translation_map:
-            translation_map[raw] = cleaned_translation_map[cleaned]
-        else:
-            # Gán text rỗng để Pass 3 inpaint mà không vẽ chữ lên (giấu text rác)
-            translation_map[raw] = ""
+    # Dựng translation_map theo chữ OCR THÔ; rỗng = Pass 3 xóa chữ mà không vẽ (rác)
+    translation_map = {raw: (cleaned_translation_map.get(cleaned, "") if cleaned else "")
+                       for raw, cleaned in normalized_mapping.items()}
 
     elapsed = time.time() - t0
 
@@ -1513,11 +1484,6 @@ def run_translation(backend: str = "deepseek"):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Monggu Translate - Translation Pass")
-    parser.add_argument("--backend", "-b", type=str, default="gemini",
-                        choices=["gemini", "deepseek", "freemodel", "nvidia", "google"],
-                        help="Backend dịch thuật (gemini, deepseek, freemodel, nvidia hoặc google)")
-    args = parser.parse_args()
-
-    sys.exit(0 if run_translation(backend=args.backend) else 1)
+    argparse.ArgumentParser(description="Monggu Translate - Translation Pass").parse_args()
+    sys.exit(0 if run_translation() else 1)
 

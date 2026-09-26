@@ -4,7 +4,7 @@ Chạy toàn bộ quy trình bằng 1 lệnh: Pass 1 (OCR) → Pass 2 (Dịch) �
 
 Usage:
     python pipeline.py --input video.mp4
-    python pipeline.py --input video.mp4 --backend deepseek --workers 4
+    python pipeline.py --input video.mp4 --workers 4
     python pipeline.py --input video.mp4 --only ocr          # chỉ chạy 1 pass
     python pipeline.py --input video.mp4 --skip-existing      # bỏ qua pass đã có output
     python pipeline.py --input video.mp4 --test              # test mode (giới hạn frames)
@@ -53,8 +53,6 @@ def run_step(title: str, script: str, extra_args: list) -> float:
 def main():
     parser = argparse.ArgumentParser(description="Monggu Translate - Pipeline (OCR → Dịch → Render)")
     parser.add_argument("--input", "-i", type=str, default=VIDEO_PATH, help="Đường dẫn video gốc")
-    parser.add_argument("--backend", "-b", type=str, default="gemini",
-                        choices=["gemini", "deepseek", "freemodel", "google", "nvidia"], help="Backend dịch")
     parser.add_argument("--workers", "-w", type=int, default=None, help="Số workers render")
     parser.add_argument("--test", action="store_true", help="Test mode (giới hạn frames)")
     parser.add_argument("--no-audio", action="store_true", help="Render không ghép audio")
@@ -69,7 +67,6 @@ def main():
     print("  Monggu Translate - PIPELINE")
     print("=" * 60)
     print(f"  Input   : {args.input}")
-    print(f"  Backend : {args.backend}")
     print(f"  Only    : {args.only}")
 
     run_ocr = args.only in ("all", "ocr")
@@ -93,7 +90,7 @@ def main():
         run_step("Pass 1/3 — OCR Scan", "ocr_pass.py", ocr_args)
 
     if run_tr:
-        run_step("Pass 2/3 — Translation", "translate_pass.py", ["--backend", args.backend])
+        run_step("Pass 2/3 — Translation", "translate_pass.py", [])
 
     if run_rd:
         rd_args = ["--input", args.input]
