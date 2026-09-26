@@ -1,0 +1,42 @@
+========================================================
+  MONGGU TRANSLATE - GPU ACCELERATED (THƯ MỤC TEST-GPU)
+========================================================
+Thư mục làm việc: d:\monggutranslate\test-gpu
+Venv GPU:         d:\monggutranslate\.venv-gpu
+
+--------------------------------------------------------
+[KÍCH HOẠT VENV GPU]
+--------------------------------------------------------
+d:\monggutranslate\.venv-gpu\Scripts\activate
+
+--------------------------------------------------------
+[BƯỚC 1] OCR (cần PaddleOCR - chạy bằng Python global)
+--------------------------------------------------------
+# OCR chưa cài trong venv-gpu, dùng Python global:
+python test-gpu\ocr_pass.py --input test-gpu\input.mp4
+
+--------------------------------------------------------
+[BƯỚC 2] DỊCH (cần API key trong .env)
+--------------------------------------------------------
+python test-gpu\translate_pass.py
+
+--------------------------------------------------------
+[BƯỚC 3] RENDER GPU (dùng venv-gpu)
+--------------------------------------------------------
+d:\monggutranslate\.venv-gpu\Scripts\python test-gpu\script.py
+
+# Hoặc kích hoạt venv trước:
+d:\monggutranslate\.venv-gpu\Scripts\activate
+python test-gpu\script.py
+
+========================================================
+  GPU CONFIG (trong test-gpu\config.py)
+========================================================
+NUM_WORKERS = 4        # 4 workers CPU (giảm từ 6)
+INPAINT_RADIUS = 4     # Nhanh hơn (giảm từ 7)
+USE_NVENC = True       # Encode video bằng GPU NVENC
+USE_NVDEC = True       # Decode video bằng GPU NVDEC
+USE_TORCH_CUDA = True  # Resize/Blur/Color trên GPU
+GPU_MAX_LOAD = 0.30    # Giới hạn 30% GPU
+
+========================================================

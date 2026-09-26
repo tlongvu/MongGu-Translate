@@ -1,0 +1,1 @@
+{"USE_GPU": false, "USE_NVENC": false, "USE_NVDEC": false, "USE_TORCH_CUDA": false, "TEST_MODE": false, "NUM_WORKERS": 4}

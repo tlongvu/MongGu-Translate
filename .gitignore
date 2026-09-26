@@ -1,0 +1,26 @@
+# Git chỉ theo dõi mã nguồn + cấu hình/dữ liệu soạn tay.
+# Media, dữ liệu sinh ra mỗi lần chạy và ảnh debug vẫn nằm trên đĩa, chỉ không vào git.
+
+# Media
+*.mp4
+*.wav
+*.mp3
+/*.png
+/*.jpg
+!/wm_template.png
+!story_engine/assets/**
+story_engine/assets/music/
+
+# Dữ liệu sinh ra theo từng video
+ocr_data.json*
+translation_map*.json*
+translation_cache.json
+wm_anchors.json
+
+# Debug / tạm
+_fr*/
+_wm_probe_out/
+_backup_*/
+__pycache__/
+*.log
+debug_*.txt

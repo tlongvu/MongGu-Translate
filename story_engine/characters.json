@@ -1,0 +1,40 @@
+{
+  "_ghi_chu": "Thân mèo chuối DÙNG CHUNG (base_idle + pool emotions). Mỗi nhân vật khác nhau ở bộ phụ kiện (hair/weapon) tra theo ID -> không bao giờ nhầm nhân vật.",
+
+  "chroma": "0x00FF00",
+  "chroma_sim": 0.30,
+  "chroma_blend": 0.12,
+  "voice": null,
+
+  "base_idle": "assets/clips/base.mp4",
+
+  "emotions": {
+    "shock": "assets/clips/emo_shock.mp4",
+    "angry": "assets/clips/emo_angry.mp4",
+    "sad":   "assets/clips/emo_sad.mp4"
+  },
+
+  "backgrounds": {
+    "mountain": "assets/backgrounds/mountain.png",
+    "hall":     "assets/backgrounds/hall.png"
+  },
+
+  "characters": {
+    "mc": {
+      "name": "Mèo Chuối",
+      "hair":   "assets/char/mc/hair.png",
+      "weapon": "assets/char/mc/weapon.png",
+      "cat_h": 1050, "cat_y": 600,
+      "hair_w": 500, "hair_dx": 0, "hair_y": 540,
+      "weap_w": 200, "weap_x": 770, "weap_y": 640
+    },
+    "rival": {
+      "name": "Hắc Miêu",
+      "hair":   "assets/char/rival/hair.png",
+      "weapon": "assets/char/rival/weapon.png",
+      "cat_h": 1050, "cat_y": 600,
+      "hair_w": 540, "hair_dx": 0, "hair_y": 520,
+      "weap_w": 210, "weap_x": 110, "weap_y": 600
+    }
+  }
+}

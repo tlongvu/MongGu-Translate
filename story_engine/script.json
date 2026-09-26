@@ -1,0 +1,12 @@
+{
+  "title": "TU TIÊN KÝ — Mèo Chuối Nghịch Thiên",
+  "resolution": [1080, 1920],
+  "scenes": [
+    { "char": "mc",    "emotion": "idle",  "bg": "mountain", "say": "Ta là Mèo Chuối, đệ tử nhỏ của Thanh Vân Tông." },
+    { "char": "mc",    "emotion": "shock", "bg": "mountain", "say": "Cái gì?! Sư phụ bị cướp mất tiên bộ?" },
+    { "char": "mc",    "emotion": "idle",  "bg": "mountain", "say": "Ta nhất định phải lên đường đòi lại." },
+    { "char": "rival", "emotion": "idle",  "bg": "hall",     "say": "Hừ... ngươi mà cũng đòi làm anh hùng?" },
+    { "char": "mc",    "emotion": "angry", "bg": "hall",     "say": "Hắc Miêu! Trả lại Thanh Vân Tiên Bộ!" },
+    { "char": "mc",    "emotion": "idle",  "bg": "mountain", "say": "Một ngày kia, ta sẽ vô địch thiên hạ." }
+  ]
+}

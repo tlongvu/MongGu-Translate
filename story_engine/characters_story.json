@@ -1,0 +1,44 @@
+{
+  "_ghi_chu": "3 nhân vật, đều là mèo chuối mặc định (KHÔNG tóc). Phân biệt bằng vũ khí + bảng tên + màu tên. Vũ khí lấy từ weapon_user_png (đã tách nền).",
+
+  "chroma": "0x00FF00", "chroma_sim": 0.30, "chroma_blend": 0.12,
+  "voice": null,
+
+  "base_idle": "assets/clips/base.mp4",
+  "emotions": {
+    "shock": "assets/clips/emo_shock.mp4",
+    "angry": "assets/clips/emo_angry.mp4",
+    "sad":   "assets/clips/emo_sad.mp4"
+  },
+  "backgrounds": {
+    "mountain": "assets/backgrounds/mountain.png",
+    "hall":     "assets/backgrounds/hall.png"
+  },
+
+  "characters": {
+    "meo_chuoi": {
+      "name": "Mèo Chuối",
+      "name_color": [255, 220, 110],
+      "hair": null,
+      "weapon": "assets/library/weapon_user_png/sword5.png",
+      "cat_h": 1050, "cat_y": 600,
+      "weap_w": 290, "weap_x": 660, "weap_y": 560
+    },
+    "hac_ma_ton": {
+      "name": "Hắc Ma Tôn",
+      "name_color": [120, 230, 140],
+      "hair": null,
+      "weapon": "assets/library/weapon_user_png/greatsword1.png",
+      "cat_h": 1050, "cat_y": 600,
+      "weap_w": 300, "weap_x": 120, "weap_y": 520
+    },
+    "lang_nhi": {
+      "name": "Lăng Nhi",
+      "name_color": [120, 220, 255],
+      "hair": null,
+      "weapon": "assets/library/weapon_user_png/bow1.png",
+      "cat_h": 1050, "cat_y": 600,
+      "weap_w": 330, "weap_x": 640, "weap_y": 540
+    }
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "title": "TU TIÊN KÝ — Thanh Vân Kiếm",
+  "resolution": [1080, 1920],
+  "scenes": [
+    { "char": "meo_chuoi", "emotion": "idle",  "bg": "mountain", "say": "Ta là Mèo Chuối, đệ tử nhỏ của Thanh Vân Tông." },
+    { "char": "meo_chuoi", "emotion": "idle",  "bg": "mountain", "say": "Sư phụ giao ta canh giữ báu vật trấn sơn." },
+    { "char": "meo_chuoi", "emotion": "shock", "bg": "mountain", "say": "Khoan đã... có yêu khí đang tới gần!" },
+    { "char": "hac_ma_ton","emotion": "idle",  "bg": "hall",     "say": "Ha ha! Giao Thanh Vân Kiếm ra đây, tiểu miêu." },
+    { "char": "hac_ma_ton","emotion": "angry", "bg": "hall",     "say": "Dám cản ta? Hôm nay ngươi phải chết!" },
+    { "char": "lang_nhi",  "emotion": "idle",  "bg": "hall",     "say": "Khoan! Mèo Chuối, để ta trợ ngươi một tay." },
+    { "char": "meo_chuoi", "emotion": "idle",  "bg": "hall",     "say": "Lăng Nhi! Vậy thì cùng ta liên thủ." },
+    { "char": "meo_chuoi", "emotion": "angry", "bg": "hall",     "say": "Thanh Vân Kiếm — xuất! Trảm tà ma!" },
+    { "char": "hac_ma_ton","emotion": "sad",   "bg": "hall",     "say": "Khôngg... ta thua một con mèo sao?!" },
+    { "char": "meo_chuoi", "emotion": "idle",  "bg": "mountain", "say": "Sơn môn bình yên. Một ngày kia ta sẽ vô địch thiên hạ." }
+  ]
+}

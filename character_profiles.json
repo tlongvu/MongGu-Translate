@@ -1,0 +1,332 @@
+{
+  "Yiyi": {
+    "gender": "nữ",
+    "role": "Người hầu, sau là bạn đồng hành của Bản tiểu thư",
+    "xung_ho": "Tự xưng \"Tôi\" (我). Được Bản tiểu thư gọi là \"Yiyi\" (依依). Gọi Bản tiểu thư là \"ngươi\" (你)"
+  },
+  "Tiểu thư": {
+    "gender": "nữ",
+    "role": "Tiểu thư giàu có, bạn đồng hành của Yiyi, muốn tu tiên",
+    "xung_ho": "Bản tiểu thư (本小姐), gọi Yiyi: Yiyi (依依), gọi người khác: cái ai đó (那个谁), bạn/cậu (你)"
+  },
+  "Người xem 1": {
+    "gender": "?",
+    "role": "Người xem truyện \"香蕉长生\"",
+    "xung_ho": "Tự xưng \"Tôi\" (我)"
+  },
+  "Người xem 2": {
+    "gender": "?",
+    "role": "Người xem truyện \"香蕉长生\", bạn của Người xem 1",
+    "xung_ho": "Tự xưng \"Tôi\" (我)"
+  },
+  "Bản tiểu thư": {
+    "gender": "nữ",
+    "role": "Nữ chính trong truyện \"香蕉长生\", sau này là nữ tu sĩ",
+    "xung_ho": "Tự xưng \"Tôi\" (我), \"Bản tiểu thư\" (本小姐). Gọi người khác là \"ngươi\" (你)"
+  },
+  "Bạch Lang": {
+    "gender": "nam",
+    "role": "Nam chính trong truyện \"香蕉长生\", người bị Bản tiểu thư căm ghét",
+    "xung_ho": "Được gọi là \"Bạch Lang\""
+  },
+  "Đinh Hạo": {
+    "gender": "nam",
+    "role": "Người câu cá, chủ hồ chứa nước Đinh Gia Loan",
+    "xung_ho": "?"
+  },
+  "Vương Binh": {
+    "gender": "nam",
+    "role": "Người câu cá, chồng của Vợ",
+    "xung_ho": "Tự xưng \"tôi\". Được gọi \"Vương Binh\"."
+  },
+  "Vợ Vương Binh": {
+    "gender": "nữ",
+    "role": "Vợ của Vương Binh, bạn gái cũ của Vương Binh",
+    "xung_ho": "tự xưng 'tôi', gọi Vương Binh là 'Vương Binh'; được Vương Binh gọi là '老婆' (lão bà)"
+  },
+  "Chu Truyền Sinh": {
+    "gender": "nam",
+    "role": "Người câu cá",
+    "xung_ho": "tự xưng 'tôi' ('tôi Chu Truyền Sinh'); được gọi là '兄弟' (huynh đệ), có thể là 'Chu Không Quân'"
+  },
+  "Ông chủ": {
+    "gender": "?",
+    "role": "Chủ hồ câu cá",
+    "xung_ho": "Tự xưng \"tôi\", gọi người khác \"huynh đệ\". Được gọi \"lão bản\"."
+  },
+  "Châu Truyền Sinh": {
+    "gender": "?",
+    "role": "Người câu cá",
+    "xung_ho": "Tự xưng \"tôi\". Được gọi \"Châu Bách Cân\", \"Châu Không Quân\"."
+  },
+  "Vợ": {
+    "gender": "nữ",
+    "role": "Vợ của Vương Binh",
+    "xung_ho": "Tự xưng \"tôi\". Gọi Vương Binh \"Vương Binh\". Được gọi \"lão bà\"."
+  },
+  "姜桃": {
+    "gender": "nữ",
+    "role": "Nhân vật chính, đệ tử mới của Vạn Phật Tông",
+    "xung_ho": "Tự xưng '我'. Được gọi là '师妹', '小师妹', '桃师妹', '姜桃', '小桃子'. Gọi người khác là '师兄', '长老', '宗主'."
+  },
+  "禅心": {
+    "gender": "nam",
+    "role": "Tứ sư huynh của姜桃, đệ tử Vạn Phật Tông",
+    "xung_ho": "Được gọi là '禅心', '四师兄'. Gọi姜桃 là '师妹', '小师妹'."
+  },
+  "通尘长老": {
+    "gender": "nam",
+    "role": "Trưởng lão nghiêm khắc của Vạn Phật Tông",
+    "xung_ho": "Được gọi là '通尘', '通尘长老'. Gọi姜桃 là '新弟子', '该弟子'."
+  },
+  "道悟长老": {
+    "gender": "nam",
+    "role": "Trưởng lão của Vạn Phật Tông, nóng tính",
+    "xung_ho": "Tự xưng '我'. Được gọi là '道悟', '道悟长老', '悟长', '悟长老'. Gọi姜桃 là '你', '该弟子'."
+  },
+  "宗主": {
+    "gender": "nam",
+    "role": "Người đứng đầu Vạn Phật Tông",
+    "xung_ho": "Được gọi là '宗主'. Gọi姜桃 là '小桃子'."
+  },
+  "玄寂": {
+    "gender": "nam",
+    "role": "Tam sư huynh của姜桃, đệ tử Vạn Phật Tông",
+    "xung_ho": "Được gọi là '玄寂', '三师兄'."
+  },
+  "三清": {
+    "gender": "nam",
+    "role": "Đại sư huynh của姜桃, đệ tử Vạn Phật Tông",
+    "xung_ho": "Được gọi là '三清', '大师兄'."
+  },
+  "渡真": {
+    "gender": "nam",
+    "role": "Nhị sư huynh của姜桃, đệ tử Vạn Phật Tông",
+    "xung_ho": "Được gọi là '渡真', '二师兄'."
+  },
+  "明慧": {
+    "gender": "nam",
+    "role": "Ngũ sư huynh của姜桃, đệ tử Vạn Phật Tông",
+    "xung_ho": "Tự xưng '我' (khi nói 'tôi không còn là người nhỏ nhất nữa'). Được gọi là '明慧', '五师兄'."
+  },
+  "刘璋": {
+    "gender": "nam",
+    "role": "đệ tử mới được điểm danh cùng Khương Đào",
+    "xung_ho": "được gọi bằng tên"
+  },
+  "张廷玉": {
+    "gender": "nam",
+    "role": "đệ tử mới được điểm danh cùng Khương Đào",
+    "xung_ho": "được gọi bằng tên"
+  },
+  "温芋": {
+    "gender": "nữ",
+    "role": "Nhân vật chính, con gái thất lạc của gia đình họ Lâm, sinh viên nghèo (còn được gọi là 楚楚), có anh trai đang nằm viện",
+    "xung_ho": "tự xưng 'tôi', được gọi 'bạn' (你/您)"
+  },
+  "财神爷": {
+    "gender": "?",
+    "role": "Thần tài từ Thiên đình, người giúp đỡ/kẻ lừa đảo",
+    "xung_ho": "gọi người khác 'bạn' (你/您)"
+  },
+  "哥哥": {
+    "gender": "nam",
+    "role": "Anh trai của 温芋, đang nằm viện",
+    "xung_ho": "?"
+  },
+  "假千金": {
+    "gender": "nữ",
+    "role": "Người giả mạo con gái nhà giàu, thay thế 温芋 trong gia đình họ Lâm",
+    "xung_ho": "?"
+  },
+  "林念念": {
+    "gender": "nữ",
+    "role": "Đại tiểu thư nhà họ Lâm, chị/em gái của 温芋",
+    "xung_ho": "?"
+  },
+  "林母": {
+    "gender": "nữ",
+    "role": "Mẹ của gia đình họ Lâm, mẹ ruột của 温芋",
+    "xung_ho": "gọi người khác 'bạn' (你)"
+  },
+  "林父": {
+    "gender": "nam",
+    "role": "Cha của gia đình họ Lâm, cha ruột của 温芋",
+    "xung_ho": "gọi người khác 'bạn' (你)"
+  },
+  "Ôn Dụ": {
+    "gender": "nữ",
+    "role": "Nhân vật chính, đối tượng được giúp đỡ, con gái thất lạc của nhà họ Lâm",
+    "xung_ho": "Tự xưng \"tôi\", được gọi \"bạn\", \"Ôn Dụ\""
+  },
+  "Thần Tài": {
+    "gender": "nam",
+    "role": "Thần Tài từ Thiên đình, cán bộ xóa đói giảm nghèo, giúp đỡ Sở Sở.",
+    "xung_ho": "Gọi Sở Sở là 'bạn' (你)."
+  },
+  "Lâm Niệm Niệm": {
+    "gender": "nữ",
+    "role": "Đại tiểu thư Lâm gia, có thái độ khinh thường với Ôn Dụ/Sở Sở.",
+    "xung_ho": "Gọi Sở Sở là 'Ôn Dụ' (温芋)."
+  },
+  "Lâm mẫu": {
+    "gender": "nữ",
+    "role": "Mẹ của Lâm gia, người tìm thấy Sở Sở/Ôn Dụ và nhận là con thất lạc.",
+    "xung_ho": "Gọi Sở Sở là 'con' (你), 'đứa con thất lạc nhiều năm của Lâm gia chúng ta'."
+  },
+  "Sở Sở": {
+    "gender": "nữ",
+    "role": "Nữ chính, học sinh nghèo, 'thiên kim giả' bị đuổi khỏi hào môn, sau này được Lâm gia nhận là con thất lạc (tên Ôn Dụ). Có anh trai đang nằm viện.",
+    "xung_ho": "Tự xưng 'tôi' (我). Gọi Thần Tài là 'Thần Tài gia' (财神爷), 'ông chủ tiệm vé số' (彩票店老板). Bị gọi là 'bạn' (您/你), 'Ôn Dụ' (温芋)."
+  },
+  "Lâm phụ": {
+    "gender": "nam",
+    "role": "Cha của Lâm gia, cùng Lâm mẫu tìm thấy Sở Sở/Ôn Dụ.",
+    "xung_ho": "?"
+  },
+  "Học sinh": {
+    "gender": "?",
+    "role": "Chủ nhân của mèo Mimi, một học sinh đang trên đường đến trường.",
+    "xung_ho": "Tự xưng \"tôi\" (我), gọi mèo là \"Mimi\"."
+  },
+  "Mimi (Mèo Ca)": {
+    "gender": "nam",
+    "role": "Mèo cưng của Học sinh, đồng thời là thủ lĩnh bí ẩn của một băng nhóm đường phố (còn được gọi là Sang Biao, Lão Đại).",
+    "xung_ho": "Được chủ nhân gọi \"Mimi\", được đồng bọn gọi \"老大\", \"猫哥\", \"丧彪\"."
+  },
+  "Đồng bọn của Mèo Ca": {
+    "gender": "?",
+    "role": "Các thành viên trong băng nhóm của Mèo Ca, biết về thân phận thật của Mimi.",
+    "xung_ho": "Tự xưng \"tôi\" (我), gọi Mimi là \"老大\", \"猫哥\", \"丧彪\"."
+  },
+  "Kẻ theo dõi": {
+    "gender": "?",
+    "role": "Một người có ý đồ xấu, đã theo dõi \"thằng nhóc\" trong vài ngày.",
+    "xung_ho": "Tự xưng \"tôi\" (我), gọi người khác là \"thằng nhóc\" (小子)."
+  },
+  "Đại tiểu thư": {
+    "gender": "nữ",
+    "role": "Nữ chính, Đại tiểu thư nhà họ Lệ, người luyện võ, tái sinh/trở về từ kiếp trước",
+    "xung_ho": "Tự xưng \"tôi\" (我). Người khác gọi \"Đại tiểu thư\" (大小姐)"
+  },
+  "Lệ Phương": {
+    "gender": "nam",
+    "role": "Thành viên nhà họ Lệ, anh/em trai cùng cha khác mẹ với Phòng Phương, người gây ra xung đột",
+    "xung_ho": "Tự xưng \"tôi\" (我)"
+  },
+  "Phòng Phương": {
+    "gender": "nam",
+    "role": "Tam thiếu gia nhà họ Lệ, \"tiểu bá vương\", \"hỗn thế ma vương\", anh/em trai cùng cha khác mẹ với Lệ Phương",
+    "xung_ho": "Tự xưng \"tiểu gia\" (小爷). Người khác gọi \"Tam thiếu gia\" (三少爷), \"Tam thiếu\" (三少)"
+  },
+  "Quản gia Vương": {
+    "gender": "nam",
+    "role": "Quản gia nhà họ Lệ",
+    "xung_ho": "Được gọi \"Quản gia Vương\" (王管家), \"quản gia\" (管家)"
+  },
+  "Lệ Thanh Thanh": {
+    "gender": "nữ",
+    "role": "Kẻ bắt nạt trong kiếp trước của nữ chính",
+    "xung_ho": "Được gọi \"Lệ Thanh Thanh\" (厉青青)"
+  },
+  "Ưu Ưu": {
+    "gender": "nữ",
+    "role": "Con gái/cháu gái mới được nhận của gia đình Thẩm, được cưng chiều",
+    "xung_ho": "Tự xưng: tôi, Ưu Ưu. Gọi người khác: anh trai, chú, dì, Anh Tư, Anh Ba."
+  },
+  "Dì Vương": {
+    "gender": "nữ",
+    "role": "Quản gia/người giúp việc nhà họ Thẩm, đối đầu với Ưu Ưu",
+    "xung_ho": "Tự xưng: tôi. Gọi Ưu Ưu là: đồ bỏ đi."
+  },
+  "Anh Tư": {
+    "gender": "nam",
+    "role": "Anh trai thứ tư của Ưu Ưu trong gia đình Thẩm, ban đầu lạnh lùng nhưng nhanh chóng bảo vệ em gái",
+    "xung_ho": "Tự xưng: tôi. Gọi Ưu Ưu là: nhóc con, bé ngoan, đồ mù chữ, em gái ruột. Gọi Anh Ba."
+  },
+  "Thẩm Minh Châu": {
+    "gender": "nữ",
+    "role": "Con gái được cưng chiều trước đây của gia đình Thẩm, có thể bị Ưu Ưu thay thế",
+    "xung_ho": "?"
+  },
+  "Anh Ba (Thanh Châu)": {
+    "gender": "nam",
+    "role": "Anh trai thứ ba của Ưu Ưu trong gia đình Thẩm, là diễn viên, cũng bảo vệ em gái",
+    "xung_ho": "Tự xưng: tôi. Gọi Ưu Ưu là: bé cưng, nhóc con. Gọi Anh Tư là: em Tư."
+  },
+  "Đào Đào": {
+    "gender": "nữ",
+    "role": "Nhân vật chính, đệ tử cũ Phong Thanh Tông, muốn gia nhập Vạn Phật Tông",
+    "xung_ho": "Tự xưng 'Tôi'; gọi 'Đại sư huynh', 'Nhị sư huynh', 'Tiểu sư muội', 'Đại sư', 'Đạo Ngộ trưởng lão'"
+  },
+  "Đại sư huynh": {
+    "gender": "nam",
+    "role": "Sư huynh của Đào Đào tại Phong Thanh Tông",
+    "xung_ho": "Gọi 'Tiểu Đào', 'Khương Đào'; gọi 'Tiểu sư muội'"
+  },
+  "Nhị sư huynh": {
+    "gender": "nam",
+    "role": "Sư huynh của Đào Đào tại Phong Thanh Tông",
+    "xung_ho": "Gọi 'bạn'; gọi 'Tiểu sư muội'"
+  },
+  "Sở Tuyết": {
+    "gender": "nữ",
+    "role": "Tiểu sư muội của Đào Đào tại Phong Thanh Tông, được mọi người yêu mến",
+    "xung_ho": "Được gọi 'Tiểu sư muội', 'Sở Tuyết tiểu sư muội'"
+  },
+  "Như Ý sư muội": {
+    "gender": "nữ",
+    "role": "Sư muội được ca ngợi là nữ tu số một",
+    "xung_ho": "Được gọi 'Như Ý sư muội'"
+  },
+  "Đại sư": {
+    "gender": "nam",
+    "role": "Phật tu, người Đào Đào muốn theo học",
+    "xung_ho": "Tự xưng 'Tôi' (ngụ ý); được gọi 'Đại sư'"
+  },
+  "Đạo Ngộ trưởng lão": {
+    "gender": "nam",
+    "role": "Trưởng lão Vạn Phật Tông, phụ trách chiêu mộ đệ tử",
+    "xung_ho": "Tự xưng 'chúng tôi'; gọi 'Nữ thí chủ'"
+  },
+  "Tôi": {
+    "gender": "nam",
+    "role": "nhân vật chính, người được hệ thống thần hào kích hoạt",
+    "xung_ho": "tự xưng là 'tôi', được gọi là 'chủ nhân' bởi hệ thống"
+  },
+  "Thu ngân": {
+    "gender": "nữ",
+    "role": "nhân viên thu ngân",
+    "xung_ho": "được gọi là 'thu ngân viên'"
+  },
+  "Bảo an": {
+    "gender": "nam",
+    "role": "bảo vệ trung tâm thương mại",
+    "xung_ho": "được gọi là 'bảo an'"
+  },
+  "Quầy tỷ": {
+    "gender": "nữ",
+    "role": "nhân viên bán hàng cao cấp",
+    "xung_ho": "được gọi là 'tỷ'"
+  },
+  "Thực tập sinh": {
+    "gender": "nữ",
+    "role": "nhân viên thực tập",
+    "xung_ho": "được gọi là 'thực tập sinh'"
+  },
+  "Chị Giang": {
+    "gender": "nữ",
+    "role": "khách hàng giàu có",
+    "xung_ho": "tự xưng 'chị', gọi người khác 'em'"
+  },
+  "Nhân viên bán hàng": {
+    "gender": "nữ",
+    "role": "nhân viên cửa hàng",
+    "xung_ho": "gọi chị Giang là 'chị'"
+  },
+  "Người qua đường": {
+    "gender": "?",
+    "role": "người qua đường bình luận",
+    "xung_ho": "gọi người khác 'bạn'"
+  }
+}
