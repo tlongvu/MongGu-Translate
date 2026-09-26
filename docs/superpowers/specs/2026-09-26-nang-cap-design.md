@@ -129,7 +129,7 @@ Mọi việc thuộc B–E. Cụ thể: **không** đổi prompt, glossary hay l
 
 ### Xong khi
 
-Test cũ và mới đều qua, các kiểm chứng trên đúng như mô tả, mỗi mục A1–A4 là một commit trên `nang-cap`.
+Test cũ và mới đều qua, các kiểm chứng trên đúng như mô tả, mỗi task trong plan là một commit trên `nang-cap` (A2 trải trên 3 pass nên có 3 commit).
 
 ## 6. Nguyên tắc chung
 
