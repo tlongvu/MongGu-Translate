@@ -91,7 +91,17 @@ Mỗi cảnh: `char` (ID nhân vật), `emotion` (`idle`/`shock`/`angry`/…), `
 ```bash
 pip install pillow numpy edge-tts          # numpy & edge-tts là tùy chọn
 python make_story_reel.py --chars characters.json --script script.json -o reel.mp4
+
+# Ý tưởng → kịch bản bằng LLM (Gemini → DeepSeek, dùng chung lõi llm.py + cache với pipeline dịch):
+python make_story_reel.py --idea "Mèo Chuối đi thi tuyển đệ tử nhưng quên mang kiếm" -o reel.mp4
 ```
+
+Với `--idea`:
+- LLM **chỉ được dùng** nhân vật, cảm xúc và bối cảnh có trong `characters.json`. Kịch bản dùng id lạ sẽ bị từ chối, không cache, và hỏi lại.
+- Kịch bản được lưu vào `kich_ban/kb_<thời gian>.json`. Muốn sửa lời thoại, sửa file đó rồi dựng lại bằng `--script kich_ban/<file>.json`.
+- Có thể thêm `"mo_ta"` (tính cách, quan hệ) cho từng nhân vật trong `characters.json` để kịch bản hợp vai hơn.
+- Cùng một ý tưởng thì cache trả về cùng một kịch bản. Muốn một bản khác thì đổi câu ý tưởng.
+- Kịch bản viết tay (`--script`) cũng được kiểm tra với thư viện trước khi dựng.
 
 ## 8. Giới hạn hiện tại & hướng nâng
 
