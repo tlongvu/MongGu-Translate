@@ -23,8 +23,6 @@ import cv2
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 import time
-import glob
-import re
 import os
 import json
 import multiprocessing as mp
@@ -38,10 +36,9 @@ except ImportError:
     HAS_TORCH_CUDA = False
 
 from config import (
-    VIDEO_PATH, OUTPUT_PREFIX, TEST_MODE, TEST_FRAMES,
+    VIDEO_PATH, TEST_MODE, TEST_FRAMES,
     NUM_WORKERS, FONT_PATH, TEXT_COLOR, OUTLINE_COLOR, OUTLINE_WIDTH,
     INPAINT_RADIUS, CROP_TOP_RATIO, SUPPRESS_TEXTS, AUTO_SUPPRESS_LATIN_ONLY,
-    OCR_DATA_PATH, TRANSLATION_MAP_PATH,
     TIKTOK_PASS_MODE, PASS_ZOOM_RATIO, PASS_SHARPEN, PASS_COLOR_ADJUST,
     PASS_PORTRAIT_916, SUPPRESS_QR_CODES,
     USE_GPU, USE_NVENC, USE_NVDEC, USE_TORCH_CUDA, GPU_MAX_LOAD,
@@ -49,23 +46,12 @@ from config import (
     SUBTITLE_BG_ENABLE, SUBTITLE_BG_COLOR, SUBTITLE_BG_ALPHA,
     SUBTITLE_BG_PAD, SUBTITLE_BG_RADIUS,
 )
+from jobs import open_job, JobError
 
 
 # ──────────────────────────────────────────────
 # UTILITY FUNCTIONS
 # ──────────────────────────────────────────────
-
-def get_next_output_path(prefix: str, ext: str = ".mp4") -> str:
-    """Auto-increment: output_final_1.mp4, _2.mp4, ..."""
-    existing = glob.glob(f"{prefix}_*.{ext.lstrip('.')}")
-    nums = []
-    for f in existing:
-        m = re.search(rf"{re.escape(prefix)}_(\d+)\.{ext.lstrip('.')}", f)
-        if m:
-            nums.append(int(m.group(1)))
-    next_num = max(nums) + 1 if nums else 1
-    return f"{prefix}_{next_num}{ext}"
-
 
 def video_mismatch(ocr_data: dict, width: int, height: int, fps: float, n_frames: int):
     """So video sắp render với ocr_data. Trả về câu mô tả chỗ lệch, hoặc None nếu khớp.
@@ -1083,8 +1069,9 @@ def process_chunk(args):
 
 def concatenate_videos(temp_files, output_path):
     """Concatenate temp chunks using ffmpeg (fast stream copy), fallback to cv2."""
-    list_file = "_concat_list.txt"
-    with open(list_file, "w") as f:
+    # Đặt cạnh file output (thư mục job); UTF-8 vì ffmpeg đọc concat list theo UTF-8 và tên job có thể có dấu
+    list_file = os.path.join(os.path.dirname(os.path.abspath(output_path)), "_concat_list.txt")
+    with open(list_file, "w", encoding="utf-8") as f:
         for tf in temp_files:
             f.write(f"file '{os.path.abspath(tf)}'\n")
 
@@ -1157,20 +1144,25 @@ if __name__ == "__main__":
     # ── Load pre-computed data ──
     print("\n[1/4] Loading OCR data + translation map...")
 
-    if not os.path.exists(OCR_DATA_PATH):
-        print(f"  [ERROR] Chưa có {OCR_DATA_PATH}!")
-        print(f"  Hãy chạy: python ocr_pass.py")
-        exit(1)
+    try:
+        job = open_job(args.input)
+    except JobError as e:
+        print(f"  [ERROR] {e}")
+        sys.exit(1)
+    if not os.path.exists(job.ocr_data):
+        print(f"  [ERROR] Chưa có OCR cho {job.name} — hãy chạy: python ocr_pass.py --input \"{args.input}\"")
+        sys.exit(1)
+    if not os.path.exists(job.translation_map):
+        print(f"  [ERROR] Chưa có bản dịch cho {job.name} — hãy chạy: python translate_pass.py --input \"{args.input}\"")
+        sys.exit(1)
 
-    if not os.path.exists(TRANSLATION_MAP_PATH):
-        print(f"  [ERROR] Chưa có {TRANSLATION_MAP_PATH}!")
-        print(f"  Hãy chạy: python translate_pass.py")
-        exit(1)
-
-    with open(OCR_DATA_PATH, "r", encoding="utf-8") as f:
+    with open(job.ocr_data, "r", encoding="utf-8") as f:
         ocr_data = json.load(f)
+    if ocr_data.get("complete") is False:
+        print("  [ERROR] OCR của video này chưa chạy xong (bị ngắt?) — chạy tiếp OCR rồi dịch lại.")
+        sys.exit(1)
 
-    with open(TRANSLATION_MAP_PATH, "r", encoding="utf-8") as f:
+    with open(job.translation_map, "r", encoding="utf-8") as f:
         translation_map = json.load(f)
 
     frame_detections = ocr_data["frame_detections"]
@@ -1200,8 +1192,8 @@ if __name__ == "__main__":
     converted_video = ocr_data.get("video", "")
     original_video = ocr_data.get("original_video", args.input)
 
-    # ocr_pass ghi video đã convert CẠNH video gốc (chỉ lưu basename) → tìm ở đó, không phải thư mục hiện tại
-    converted_path = os.path.join(os.path.dirname(os.path.abspath(args.input)), converted_video)
+    # ocr_pass ghi video đã convert vào thư mục job (chỉ lưu basename)
+    converted_path = os.path.join(job.dir, converted_video)
     if converted_video and converted_video != original_video and os.path.exists(converted_path):
         video_path = converted_path
         audio_source = args.input  # video convert đã bỏ tiếng (-an); tiếng lấy từ video gốc
@@ -1223,7 +1215,7 @@ if __name__ == "__main__":
         print(f"  ocr_data.json là của '{ocr_data.get('original_video', '?')}' — hãy chạy lại OCR cho video này.")
         sys.exit(1)
 
-    output_video = get_next_output_path(OUTPUT_PREFIX)
+    output_video = job.output
     num_workers = args.workers
 
     print(f"  Input  : {video_path}")
@@ -1240,7 +1232,7 @@ if __name__ == "__main__":
         end = total_frames if i == num_workers - 1 else start + chunk_size
         chunks.append((start, end))
 
-    temp_files = [f"_temp_chunk_{i}.mp4" for i in range(num_workers)]
+    temp_files = [os.path.join(job.dir, f"_temp_chunk_{i}.mp4") for i in range(num_workers)]
 
     # Split frame_detections per worker chunk
     chunk_detections = []
@@ -1277,8 +1269,14 @@ if __name__ == "__main__":
 
     wall_start = time.time()
 
-    with mp.Pool(processes=num_workers) as pool:
-        results = pool.map(process_chunk, worker_args)
+    try:
+        with mp.Pool(processes=num_workers) as pool:
+            results = pool.map(process_chunk, worker_args)
+    except BaseException:
+        for tf in temp_files:  # worker lỗi → dọn chunk dở rồi báo lỗi
+            if os.path.exists(tf):
+                os.remove(tf)
+        raise
 
     wall_elapsed = time.time() - wall_start
     print(f"\n  All workers finished in {wall_elapsed:.1f}s")
