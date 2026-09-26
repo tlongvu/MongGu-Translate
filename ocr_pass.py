@@ -39,6 +39,7 @@ from config import (
     NUM_WORKERS, USE_GPU,
     OCR_SCENE_DIFF, OCR_SCENE_DIFF_THRESHOLD, OCR_SCENE_DIFF_WIDTH, OCR_MAX_SKIP_SEC,
 )
+from utils import write_json_atomic
 
 
 def calculate_iou(boxA, boxB):
@@ -357,8 +358,7 @@ def _save_intermediate_checkpoint(video_path, original_video_path, fps, width, h
             "frame_detections": frame_detections,
             "text_segments": temp_segments,
         }
-        with open(OCR_DATA_PATH, "w", encoding="utf-8") as f:
-            json.dump(ocr_data, f, ensure_ascii=False, indent=2)
+        write_json_atomic(OCR_DATA_PATH, ocr_data)
         print(f"\n  [CHECKPOINT] Đã tự động lưu tiến trình: {len(frame_detections)} frames.")
     except Exception as e:
         print(f"\n  [WARN] Không thể lưu checkpoint: {e}")
@@ -618,8 +618,7 @@ def run_ocr_pass(video_path: str, test_mode: bool = False, test_frames: int = 30
         "text_segments": text_segments,
     }
 
-    with open(OCR_DATA_PATH, "w", encoding="utf-8") as f:
-        json.dump(ocr_data, f, ensure_ascii=False, indent=2)
+    write_json_atomic(OCR_DATA_PATH, ocr_data)
 
     if interrupted:
         print(f"\n{'=' * 55}")

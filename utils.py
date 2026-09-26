@@ -1,12 +1,16 @@
 """
-Monggu Translate - Tiện ích dùng chung: logging + progress bar.
+Monggu Translate - Tiện ích dùng chung: logging, progress bar, ghi JSON an toàn.
 
 - get_logger(): logger có timestamp + level, thay dần cho print() rải rác.
 - progress_iter(): dùng tqdm nếu cài, không thì trả về iterable gốc (no-op).
+- write_json_atomic(): ghi JSON qua file tạm + os.replace, lỗi giữa chừng không hỏng file cũ.
 """
 
+import json
 import logging
+import os
 import sys
+import tempfile
 
 
 def get_logger(name: str = "monggu", level: int = logging.INFO) -> logging.Logger:
@@ -29,3 +33,16 @@ def progress_iter(iterable, total=None, desc: str = ""):
         return tqdm(iterable, total=total, desc=desc)
     except ImportError:
         return iterable
+
+
+def write_json_atomic(path: str, obj) -> None:
+    """Ghi JSON an toàn: ghi ra file tạm cùng thư mục rồi os.replace.
+    Lỗi giữa chừng (mất điện, Ctrl+C, object không serialize được) → file cũ còn nguyên."""
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(os.path.abspath(path)), suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(obj, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, path)
+    except BaseException:
+        os.remove(tmp)
+        raise

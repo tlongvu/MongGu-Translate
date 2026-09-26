@@ -7,12 +7,14 @@ Chạy:  python -m pytest tests/         (nếu có pytest)
 import os
 import sys
 import json
+import shutil
 import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import script as s          # noqa: E402
 import translate_pass as tp  # noqa: E402
+import utils                 # noqa: E402
 
 FP = "nonexistent.ttf"  # → ImageFont.load_default()
 
@@ -103,6 +105,27 @@ def test_translation_cache_roundtrip():
         tp.TRANSLATION_CACHE_PATH = orig
         if os.path.exists(tmp):
             os.remove(tmp)
+
+
+# ── Ghi JSON an toàn (utils) ──
+
+def test_write_json_atomic_keeps_old_file_on_error():
+    tmpdir = tempfile.mkdtemp()
+    path = os.path.join(tmpdir, "data.json")
+    try:
+        utils.write_json_atomic(path, {"你好": "Xin chào"})
+        with open(path, encoding="utf-8") as f:
+            assert json.load(f) == {"你好": "Xin chào"}
+        try:
+            utils.write_json_atomic(path, {"hỏng": object()})  # object() không serialize được
+            raise AssertionError("Phải ném TypeError")
+        except TypeError:
+            pass
+        with open(path, encoding="utf-8") as f:
+            assert json.load(f) == {"你好": "Xin chào"}, "File cũ phải còn nguyên"
+        assert os.listdir(tmpdir) == ["data.json"], "Không được để lại file tạm"
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
 
 
 # ── Standalone runner (không cần pytest) ──

@@ -29,6 +29,7 @@ from config import (
     NORMALIZATION_SYSTEM_PROMPT,
     OCR_DATA_PATH, TRANSLATION_MAP_PATH, TRANSLATION_CACHE_PATH,
 )
+from utils import write_json_atomic
 
 
 def load_translation_cache() -> dict:
@@ -47,8 +48,7 @@ def load_translation_cache() -> dict:
 def save_translation_cache(cache: dict) -> None:
     """Lưu cache bản dịch để lần sau chỉ dịch câu mới."""
     try:
-        with open(TRANSLATION_CACHE_PATH, "w", encoding="utf-8") as f:
-            json.dump(cache, f, ensure_ascii=False, indent=2)
+        write_json_atomic(TRANSLATION_CACHE_PATH, cache)
     except Exception as e:
         print(f"  [CACHE][WARN] Không lưu được cache: {e}")
 
@@ -1140,8 +1140,7 @@ def infer_character_profiles(transcript: list, glossary: dict) -> dict:
             existing = {}
     merged = {**profiles, **existing}
     try:
-        json.dump(merged, open(CHAR_PROFILES_PATH, "w", encoding="utf-8"),
-                  ensure_ascii=False, indent=2)
+        write_json_atomic(CHAR_PROFILES_PATH, merged)
         print(f"  [Phase 3] Hồ sơ nhân vật: {len(merged)} người -> {os.path.basename(CHAR_PROFILES_PATH)}")
     except Exception as e:
         print(f"  [Phase 3][WARN] Không lưu được hồ sơ: {e}")
@@ -1486,8 +1485,7 @@ def run_translation(backend: str = "deepseek"):
 
     # Xuất JSON
     print(f"\n[3/3] Xuất translation_map.json...")
-    with open(TRANSLATION_MAP_PATH, "w", encoding="utf-8") as f:
-        json.dump(translation_map, f, ensure_ascii=False, indent=2)
+    write_json_atomic(TRANSLATION_MAP_PATH, translation_map)
 
     print(f"\n{'=' * 55}")
     print(f"  Dịch thuật hoàn tất!")
