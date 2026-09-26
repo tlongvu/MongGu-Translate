@@ -67,6 +67,18 @@ def get_next_output_path(prefix: str, ext: str = ".mp4") -> str:
     return f"{prefix}_{next_num}{ext}"
 
 
+def video_mismatch(ocr_data: dict, width: int, height: int, fps: float, n_frames: int):
+    """So video sắp render với ocr_data. Trả về câu mô tả chỗ lệch, hoặc None nếu khớp.
+    Video DÀI hơn dữ liệu vẫn cho qua (dữ liệu OCR --test chỉ phủ đoạn đầu)."""
+    if (width, height) != (ocr_data["width"], ocr_data["height"]):
+        return f"kích thước {width}x{height} ≠ {ocr_data['width']}x{ocr_data['height']}"
+    if abs(fps - ocr_data["fps"]) > 0.5:
+        return f"fps {fps:.2f} ≠ {ocr_data['fps']:.2f}"
+    if 0 < n_frames < ocr_data["total_frames"] - ocr_data["fps"]:
+        return f"video chỉ có {n_frames} frame, dữ liệu OCR cần {ocr_data['total_frames']}"
+    return None
+
+
 def create_text_mask(frame_shape, boxes, expand_ratio=1.25):
     """Binary mask over all text regions for inpainting."""
     mask = np.zeros(frame_shape[:2], dtype=np.uint8)
@@ -757,6 +769,8 @@ def process_chunk(args):
     print(f"  [Worker {chunk_idx}] Render {'(GPU+NVENC) ' if gpu_mode else ''}{'(Pass Mode) ' if TIKTOK_PASS_MODE else ''}frames {start_frame}-{end_frame}...")
 
     cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise RuntimeError(f"[Worker {chunk_idx}] Không mở được video: {video_path}")
     cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
 
     # Nếu chạy 9:16 nền mờ, output resolution thay đổi
@@ -1038,8 +1052,7 @@ def process_chunk(args):
             try:
                 ffmpeg_proc.stdin.write(frame.tobytes())
             except BrokenPipeError:
-                print(f"  [Worker {chunk_idx}] ERROR: NVENC pipe broken")
-                break
+                raise RuntimeError(f"[Worker {chunk_idx}] ffmpeg/NVENC dừng giữa chừng (pipe vỡ) — xem lỗi ffmpeg in ở trên")
         elif out:
             out.write(frame)
         
@@ -1055,7 +1068,8 @@ def process_chunk(args):
     cap.release()
     if ffmpeg_proc:
         ffmpeg_proc.stdin.close()
-        ffmpeg_proc.wait()
+        if ffmpeg_proc.wait() != 0:
+            raise RuntimeError(f"[Worker {chunk_idx}] ffmpeg lỗi (mã {ffmpeg_proc.returncode}) khi encode {temp_output}")
     if out:
         out.release()
     elapsed = time.time() - t0
@@ -1193,6 +1207,20 @@ if __name__ == "__main__":
         video_path = args.input
         audio_source = args.input
 
+    # Chặn render nhầm video: dữ liệu OCR phải khớp video sắp render
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        print(f"  [ERROR] Không mở được video: {video_path}")
+        sys.exit(1)
+    problem = video_mismatch(ocr_data, int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)),
+                             int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)),
+                             cap.get(cv2.CAP_PROP_FPS), int(cap.get(cv2.CAP_PROP_FRAME_COUNT)))
+    cap.release()
+    if problem:
+        print(f"  [ERROR] Video '{video_path}' không khớp dữ liệu OCR: {problem}")
+        print(f"  ocr_data.json là của '{ocr_data.get('original_video', '?')}' — hãy chạy lại OCR cho video này.")
+        sys.exit(1)
+
     output_video = get_next_output_path(OUTPUT_PREFIX)
     num_workers = args.workers
 
@@ -1261,6 +1289,7 @@ if __name__ == "__main__":
     concatenate_videos(ordered_temps, output_video)
 
     # ── Mux audio từ video gốc ──
+    mux_ok = True
     if args.no_audio:
         print(f"\n[5/5] Bỏ qua mux audio (--no-audio)")
         print(f"  → Dùng audio_tools.py để xử lý audio riêng:")
@@ -1289,15 +1318,20 @@ if __name__ == "__main__":
                 os.rename(video_with_audio, output_video)
                 print(f"  Audio mux OK")
             else:
-                print(f"  [WARN] Mux audio that bai: {result.stderr[:200]}")
-                print(f"  Video output van su dung duoc (khong co audio)")
+                print(f"  [ERROR] Mux audio thất bại: {result.stderr[:200]}")
+                mux_ok = False
         except Exception as e:
-            print(f"  [WARN] ffmpeg khong kha dung cho audio mux: {e}")
+            print(f"  [ERROR] ffmpeg không khả dụng cho audio mux: {e}")
+            mux_ok = False
 
     # Cleanup temp files
     for tf in temp_files:
         if os.path.exists(tf):
             os.remove(tf)
+
+    if not mux_ok:
+        print(f"  Video (không tiếng) vẫn ở: {output_video}")
+        sys.exit(1)
 
     total_time = time.time() - wall_start
     print(f"\n{'=' * 55}")

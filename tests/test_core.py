@@ -68,6 +68,16 @@ def test_interpolate_bbox():
     assert s.interpolate_bbox(kfs, 999)[0] == 100
 
 
+def test_video_mismatch():
+    data = {"width": 1440, "height": 1080, "fps": 25.0, "total_frames": 1000}
+    assert s.video_mismatch(data, 1440, 1080, 25.0, 1000) is None
+    assert s.video_mismatch(data, 1440, 1080, 25.0, 5000) is None, "Video dài hơn dữ liệu (OCR --test) vẫn cho qua"
+    assert s.video_mismatch(data, 1440, 1080, 25.0, 0) is None, "Không đọc được số frame -> bỏ qua kiểm tra này"
+    assert "kích thước" in s.video_mismatch(data, 720, 1280, 25.0, 1000)
+    assert "fps" in s.video_mismatch(data, 1440, 1080, 30.0, 1000)
+    assert "frame" in s.video_mismatch(data, 1440, 1080, 25.0, 900)
+
+
 # ── Segment OCR (ocr_pass) ──
 
 def _det(text, x1, y1=900, h=40, w_per_char=40):
