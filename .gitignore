@@ -7,7 +7,6 @@
 *.mp3
 /*.png
 /*.jpg
-!/wm_template.png
 !story_engine/assets/**
 story_engine/assets/music/
 

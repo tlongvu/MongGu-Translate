@@ -66,19 +66,6 @@ def video_mismatch(ocr_data: dict, width: int, height: int, fps: float, n_frames
     return None
 
 
-def create_text_mask(frame_shape, boxes, expand_ratio=1.25):
-    """Binary mask over all text regions for inpainting."""
-    mask = np.zeros(frame_shape[:2], dtype=np.uint8)
-    for box in boxes:
-        pts = np.array(box, dtype=np.int32)
-        center = pts.mean(axis=0).astype(np.float32)
-        pts_exp = (center + (pts.astype(np.float32) - center) * expand_ratio).astype(np.int32)
-        pts_exp[:, 0] = np.clip(pts_exp[:, 0], 0, frame_shape[1] - 1)
-        pts_exp[:, 1] = np.clip(pts_exp[:, 1], 0, frame_shape[0] - 1)
-        cv2.fillPoly(mask, [pts_exp], 255)
-    return mask
-
-
 @lru_cache(maxsize=128)
 def get_font(font_path, size):
     """Load font (đã cache theo (font_path, size) để không tạo lại mỗi lần vẽ)."""
