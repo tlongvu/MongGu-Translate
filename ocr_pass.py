@@ -35,7 +35,7 @@ from config import (
     OCR_LANG, OCR_INTERVAL_SEC, OCR_CONFIDENCE_THRESHOLD,
     OCR_RESIZE_FACTOR, CROP_TOP_RATIO, WATERMARK_PATTERNS,
     SUPPRESS_TEXTS, TARGET_FPS,
-    NUM_WORKERS, USE_GPU,
+    USE_GPU,
     OCR_SCENE_DIFF, OCR_SCENE_DIFF_THRESHOLD, OCR_SCENE_DIFF_WIDTH, OCR_MAX_SKIP_SEC,
 )
 from utils import write_json_atomic
@@ -423,18 +423,22 @@ def run_ocr_pass(video_path: str, test_mode: bool = False, test_frames: int = 30
     ocr_interval_frames = max(1, int(fps * OCR_INTERVAL_SEC))
     print(f"  OCR mỗi    : {ocr_interval_frames} frames ({OCR_INTERVAL_SEC}s)")
 
-    # ── Khởi tạo PaddleOCR (1 engine per worker thread) ──
-    # Nếu dùng GPU, giới hạn số workers xuống 1 hoặc 2 để tránh tràn VRAM GPU (GTX 1650)
-    current_num_workers = 1 if USE_GPU else NUM_WORKERS
-    print(f"\n[2/3] Khởi tạo {current_num_workers} PaddleOCR workers (use_gpu={USE_GPU})...")
-
     # Import lười: PaddleOCR nặng (~15s); để module import nhanh cho test/tool dùng build_text_segments
+    import paddle
     from paddleocr import PaddleOCR
+
+    # ── Khởi tạo PaddleOCR (1 engine per worker thread) ──
+    # GPU chỉ khi Paddle THẬT SỰ có CUDA (bản paddlepaddle CPU lặng lẽ chạy CPU → log cũ "use_gpu=True" sai).
+    # 1 worker cả khi chạy CPU: Paddle CPU đã tự đa luồng — đo trên máy 8 luồng, 500 frame: 1 worker 45.7s,
+    # 4 worker 47.6s (kết quả y hệt) → nhiều engine chỉ tốn gấp 4 RAM. GPU (GTX 1650 4GB): 1 worker cho khỏi tràn VRAM.
+    ocr_gpu = USE_GPU and paddle.device.is_compiled_with_cuda()
+    current_num_workers = 1
+    print(f"\n[2/3] Khởi tạo {current_num_workers} PaddleOCR workers (use_gpu={ocr_gpu})...")
 
     # Tạo 1 engine riêng cho mỗi worker để tránh GIL contention
     ocr_engines = []
     for i in range(current_num_workers):
-        eng = PaddleOCR(use_angle_cls=True, lang=OCR_LANG, show_log=False, use_gpu=USE_GPU)
+        eng = PaddleOCR(use_angle_cls=True, lang=OCR_LANG, show_log=False, use_gpu=ocr_gpu)
         ocr_engines.append(eng)
         print(f"  Worker {i + 1}/{current_num_workers} sẵn sàng")
 
