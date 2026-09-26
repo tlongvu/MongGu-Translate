@@ -60,16 +60,9 @@ for i in range(1, 20):
     if _key_val and _key_val not in GEMINI_API_KEYS:
         GEMINI_API_KEYS.append(_key_val)
 
-GEMINI_API_KEY = GEMINI_API_KEYS[0] if GEMINI_API_KEYS else ""
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
 GEMINI_MODEL = "gemini-2.5-flash"
 DEEPSEEK_MODEL = "deepseek-chat"
-FREEMODEL_API_KEY = os.getenv("FREEMODEL_API_KEY", "")
-FREEMODEL_BASE_URL = os.getenv("FREEMODEL_BASE_URL", "https://api.freemodel.dev/v1")
-FREEMODEL_MODEL = os.getenv("FREEMODEL_MODEL", "gpt-4o-mini")
-NVIDIA_API_KEY = os.getenv("NVIDIA_API_KEY", "")
-NVIDIA_MODEL = os.getenv("NVIDIA_MODEL", "nvidia/nemotron-mini-4b-instruct")
 GLOSSARY_PATH = os.path.join(_SCRIPT_DIR, "glossary.json")
 
 NORMALIZATION_SYSTEM_PROMPT = """Bạn là hệ thống tiền xử lý phụ đề video Trung Quốc.
@@ -99,7 +92,7 @@ OUTPUT: {
 }
 KHÔNG giải thích. CHỈ trả về duy nhất JSON Object."""
 
-# Prompt cho Deepseek
+# Prompt dịch (dùng cho mọi LLM qua llm.ask_json)
 TRANSLATION_GENRE = "tình cảm gia đình / hài hước tuổi thơ"
 TRANSLATION_SYSTEM_PROMPT = """Bạn là dịch giả chuyên nghiệp phụ đề phim Trung Quốc sang tiếng Việt.
 Thể loại phim: {genre}
@@ -260,8 +253,6 @@ GPU_MAX_LOAD = 0.30              # Giới hạn GPU load tối đa (30% → khô
 # ──────────────────────────────────────────────
 OCR_DATA_PATH = os.path.join(_SCRIPT_DIR, "ocr_data.json")
 TRANSLATION_MAP_PATH = os.path.join(_SCRIPT_DIR, "translation_map.json")
-# Cache bản dịch giữa các lần chạy: {cleaned_zh: vi} → video mới chỉ dịch câu mới
-TRANSLATION_CACHE_PATH = os.path.join(_SCRIPT_DIR, "translation_cache.json")
 # Cache lời gọi LLM (llm.ask_json): khóa = hash prompt đầy đủ → an toàn giữa các video
 LLM_CACHE_PATH = os.path.join(_SCRIPT_DIR, "cache", "llm.sqlite")
 
