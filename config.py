@@ -63,7 +63,6 @@ for i in range(1, 20):
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
 GEMINI_MODEL = "gemini-2.5-flash"
 DEEPSEEK_MODEL = "deepseek-chat"
-GLOSSARY_PATH = os.path.join(_SCRIPT_DIR, "glossary.json")
 
 NORMALIZATION_SYSTEM_PROMPT = """Bạn là hệ thống tiền xử lý phụ đề video Trung Quốc.
 
@@ -92,15 +91,10 @@ OUTPUT: {
 }
 KHÔNG giải thích. CHỈ trả về duy nhất JSON Object."""
 
-# Prompt dịch (dùng cho mọi LLM qua llm.ask_json)
-TRANSLATION_GENRE = "tình cảm gia đình / hài hước tuổi thơ"
+# Prompt dịch (dùng cho mọi LLM qua llm.ask_json). Định dạng đầu ra do Phase 1 tự nối thêm.
+TRANSLATION_GENRE = "phim ngắn Trung Quốc"
 TRANSLATION_SYSTEM_PROMPT = """Bạn là dịch giả chuyên nghiệp phụ đề phim Trung Quốc sang tiếng Việt.
 Thể loại phim: {genre}
-
-Ngữ cảnh video: Lời kể chuyện hồi ký của một người về tuổi thơ của mình. Đoạn đầu có cảnh người cha đánh người con vì nghịch điện thoại.
-LƯU Ý XƯNG HÔ (RẤT QUAN TRỌNG): 
-- Khi dùng giọng kể chuyện (narrative) hoặc nhãn dán nhân vật đứng đơn lẻ (VD: "我"), BẮT BUỘC xưng là "Tôi".
-- Chỉ xưng là "Con" khi đó là câu thoại nói chuyện trực tiếp với Bố/Mẹ/Ông/Bà (VD: "bố ơi, con xin lỗi").
 
 Bảng tên riêng (BẮT BUỘC sử dụng đúng):
 {glossary}
@@ -110,11 +104,7 @@ Quy tắc dịch:
 2. Giữ nguyên tên riêng theo bảng glossary ở trên
 3. Giữ giọng văn phù hợp thể loại phim (kịch tính, trang trọng khi cần)
 4. Nếu là nhãn tên nhân vật (1-3 từ, ví dụ "姜姐", "王建成"), chỉ cần dịch tên
-5. Câu ngắn 1-2 từ → dịch ngắn gọn, không thêm thắt
-
-Tôi sẽ gửi một JSON array các câu tiếng Trung theo thứ tự xuất hiện trong phim.
-Hãy trả về một JSON array các câu tiếng Việt tương ứng, ĐÚNG THỨ TỰ, ĐÚNG SỐ LƯỢNG.
-CHỈ trả về JSON array, không thêm giải thích."""
+5. Câu ngắn 1-2 từ → dịch ngắn gọn, không thêm thắt"""
 
 # ──────────────────────────────────────────────
 # RENDERING

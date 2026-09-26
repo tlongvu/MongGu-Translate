@@ -16,6 +16,7 @@ import script as s          # noqa: E402
 import translate_pass as tp  # noqa: E402
 import utils                 # noqa: E402
 import ocr_pass as op        # noqa: E402
+import jobs                  # noqa: E402
 
 FP = "nonexistent.ttf"  # → ImageFont.load_default()
 
@@ -147,14 +148,24 @@ def test_layout_cache_hits():
 # ── Cache dịch (translate_pass) ──
 
 def test_run_translation_fails_without_input():
-    orig = tp.load_ocr_data
+    d = tempfile.mkdtemp()
+    orig_jobs, orig_load = jobs.JOBS_DIR, tp.load_ocr_data
     try:
-        tp.load_ocr_data = lambda: None                   # thiếu ocr_data.json
-        assert tp.run_translation() is False
-        tp.load_ocr_data = lambda: {"unique_texts": []}   # OCR không ra chữ nào
-        assert tp.run_translation() is False
+        jobs.JOBS_DIR = os.path.join(d, "jobs")
+        v = os.path.join(d, "tap1.mp4")
+        with open(v, "wb") as f:
+            f.write(b"video")
+        assert tp.run_translation(v) is False                   # chưa có job (chưa OCR)
+        jobs.open_job(v, create=True)
+        tp.load_ocr_data = lambda path: None                    # có job nhưng thiếu ocr_data.json
+        assert tp.run_translation(v) is False
+        tp.load_ocr_data = lambda path: {"unique_texts": []}    # OCR không ra chữ nào
+        assert tp.run_translation(v) is False
+        tp.load_ocr_data = lambda path: {"unique_texts": ["你好"], "text_segments": [{}], "complete": False}
+        assert tp.run_translation(v) is False                   # OCR bị ngắt giữa chừng
     finally:
-        tp.load_ocr_data = orig
+        jobs.JOBS_DIR, tp.load_ocr_data = orig_jobs, orig_load
+        shutil.rmtree(d, ignore_errors=True)
 
 
 def _fake_llm(first_window_reply):
@@ -173,14 +184,13 @@ def _fake_llm(first_window_reply):
 
 def _run_contextual(fake, segs_texts, norm, texts):
     segs = [{'text': t, 'start_frame': i * 10, 'end_frame': i * 10 + 5} for i, t in enumerate(segs_texts)]
-    orig_ask, orig_prof = tp.ask_json, tp.CHAR_PROFILES_PATH
+    orig_ask = tp.ask_json
     tmp = tempfile.mkdtemp()
     try:
         tp.ask_json = fake
-        tp.CHAR_PROFILES_PATH = os.path.join(tmp, "profiles.json")
-        return tp.translate_contextual(segs, norm, texts, {})
+        return tp.translate_contextual(segs, norm, texts, {}, os.path.join(tmp, "profiles.json"))
     finally:
-        tp.ask_json, tp.CHAR_PROFILES_PATH = orig_ask, orig_prof
+        tp.ask_json = orig_ask
         shutil.rmtree(tmp, ignore_errors=True)
 
 

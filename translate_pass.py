@@ -23,34 +23,33 @@ import argparse
 from difflib import get_close_matches
 
 from config import (
-    GLOSSARY_PATH,
     TRANSLATION_GENRE, TRANSLATION_SYSTEM_PROMPT,
-    NORMALIZATION_SYSTEM_PROMPT,
-    OCR_DATA_PATH, TRANSLATION_MAP_PATH,
+    NORMALIZATION_SYSTEM_PROMPT, VIDEO_PATH,
 )
+from jobs import open_job, JobError
 from llm import ask_json, LLMError
 from utils import write_json_atomic
 
 
-def load_glossary() -> dict:
-    """Load bảng glossary tên riêng."""
-    if os.path.exists(GLOSSARY_PATH):
-        with open(GLOSSARY_PATH, "r", encoding="utf-8") as f:
+def load_glossary(path: str) -> dict:
+    """Load bảng glossary tên riêng của video/series này."""
+    if os.path.exists(path):
+        with open(path, "r", encoding="utf-8") as f:
             glossary = json.load(f)
         print(f"  Loaded glossary: {len(glossary)} entries")
         return glossary
-    print("  [WARN] Không tìm thấy glossary.json, bỏ qua")
+    print("  (Chưa có glossary riêng cho video/series này)")
     return {}
 
 
-def load_ocr_data() -> dict:
+def load_ocr_data(path: str) -> dict:
     """Load kết quả OCR từ Pass 1."""
-    if not os.path.exists(OCR_DATA_PATH):
-        print(f"  [ERROR] Không tìm thấy {OCR_DATA_PATH}")
+    if not os.path.exists(path):
+        print(f"  [ERROR] Không tìm thấy {path}")
         print(f"  Hãy chạy ocr_pass.py trước!")
         return None
 
-    with open(OCR_DATA_PATH, "r", encoding="utf-8") as f:
+    with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
     print(f"  Loaded OCR data: {len(data.get('unique_texts', []))} unique texts")
     return data
@@ -88,7 +87,6 @@ def normalize_texts(unique_texts: list, batch_size: int = 150) -> dict:
 #   Phase 4: pass QA rà soát nhất quán chủ ngữ/xưng hô
 # ──────────────────────────────────────────────
 
-CHAR_PROFILES_PATH = os.path.join(os.path.dirname(GLOSSARY_PATH), "character_profiles.json")
 
 _PROFILE_SYS = (
     "Bạn là trợ lý phân tích nhân vật phim Trung Quốc. "
@@ -165,7 +163,7 @@ def build_ordered_transcript(text_segments: list, normalized_mapping: dict, glos
     return transcript
 
 
-def infer_character_profiles(transcript: list, glossary: dict) -> dict:
+def infer_character_profiles(transcript: list, glossary: dict, profiles_path: str) -> dict:
     """Phase 3: suy luận hồ sơ nhân vật từ THOẠI (không phụ thuộc nhãn). Lưu file tái dùng."""
     sample = [f"[{it['idx']}] {it['cleaned']}" for it in transcript[:90]]
     known = sorted(set(list(glossary.values())))
@@ -180,17 +178,17 @@ def infer_character_profiles(transcript: list, glossary: dict) -> dict:
     if not isinstance(profiles, dict):
         return {}
 
-    # Trộn với hồ sơ thủ công nếu đã có (ưu tiên file cũ do người dùng chỉnh)
+    # Trộn với hồ sơ đã có của video/series này (ưu tiên bản người dùng đã chỉnh)
     existing = {}
-    if os.path.exists(CHAR_PROFILES_PATH):
+    if os.path.exists(profiles_path):
         try:
-            existing = json.load(open(CHAR_PROFILES_PATH, encoding="utf-8"))
+            existing = json.load(open(profiles_path, encoding="utf-8"))
         except Exception:
             existing = {}
     merged = {**profiles, **existing}
     try:
-        write_json_atomic(CHAR_PROFILES_PATH, merged)
-        print(f"  [Phase 3] Hồ sơ nhân vật: {len(merged)} người -> {os.path.basename(CHAR_PROFILES_PATH)}")
+        write_json_atomic(profiles_path, merged)
+        print(f"  [Phase 3] Hồ sơ nhân vật: {len(merged)} người -> {profiles_path}")
     except Exception as e:
         print(f"  [Phase 3][WARN] Không lưu được hồ sơ: {e}")
     return merged
@@ -311,7 +309,7 @@ def qa_consistency_pass(transcript: list, vi_by_idx: dict, profiles: dict,
 
 
 def translate_contextual(text_segments: list, normalized_mapping: dict,
-                         texts_to_translate: list, glossary: dict) -> dict:
+                         texts_to_translate: list, glossary: dict, profiles_path: str) -> dict:
     """
     Orchestrator Phase 1-4. Trả về {cleaned_zh: vi} phủ tối đa texts_to_translate.
     Ném LLMError nếu LLM hỏng / vẫn bỏ sót dòng → caller dừng (exit 1); phần đã xong nằm trong cache.
@@ -324,7 +322,7 @@ def translate_contextual(text_segments: list, normalized_mapping: dict,
     print(f"    {len(transcript)} dòng ({n_label} nhãn tên, {len(transcript)-n_label} thoại)")
 
     print("  [Phase 3] Suy luận hồ sơ nhân vật...")
-    profiles = infer_character_profiles(transcript, glossary)
+    profiles = infer_character_profiles(transcript, glossary, profiles_path)
 
     print("  [Phase 1+2] Dịch kịch bản theo ngữ cảnh + người nói...")
     vi_by_idx = translate_script(transcript, profiles, glossary)
@@ -356,19 +354,27 @@ def translate_contextual(text_segments: list, normalized_mapping: dict,
     return cleaned_to_vi
 
 
-def run_translation():
-    """Chạy dịch thuật, xuất translation_map.json. Trả về True nếu thành công."""
+def run_translation(video_path: str):
+    """Chạy dịch thuật cho video (đã OCR), xuất jobs/<tên>/translation_map.json. Trả về True nếu thành công."""
     print("=" * 55)
     print("  Monggu Translate - Pass 2: Translation")
     print("=" * 55)
 
     # Load data
     print("\n[1/3] Đọc dữ liệu...")
-    ocr_data = load_ocr_data()
+    try:
+        job = open_job(video_path)
+    except JobError as e:
+        print(f"  [ERROR] {e}")
+        return False
+    ocr_data = load_ocr_data(job.ocr_data)
     if not ocr_data:
         return False
+    if ocr_data.get("complete") is False:
+        print("  [ERROR] OCR của video này chưa chạy xong (bị ngắt?) — chạy tiếp ocr_pass.py trước.")
+        return False
 
-    glossary = load_glossary()
+    glossary = load_glossary(job.glossary)
     unique_texts = ocr_data.get("unique_texts", [])
 
     if not unique_texts:
@@ -398,7 +404,7 @@ def run_translation():
         print(f"\n[2/3] Dịch theo NGỮ CẢNH kịch bản (Phase 1-4) — {len(text_segments)} segment...")
         t0 = time.time()
         cleaned_translation_map = translate_contextual(
-            text_segments, normalized_mapping, texts_to_translate, glossary)
+            text_segments, normalized_mapping, texts_to_translate, glossary, job.profiles)
     except (LLMError, RuntimeError) as e:
         print(f"  [ERROR] Dịch thất bại: {e}")
         print("  Phần đã dịch xong nằm trong cache/llm.sqlite — chạy lại sẽ làm tiếp, không tốn lại.")
@@ -418,13 +424,13 @@ def run_translation():
 
     # Xuất JSON
     print(f"\n[3/3] Xuất translation_map.json...")
-    write_json_atomic(TRANSLATION_MAP_PATH, translation_map)
+    write_json_atomic(job.translation_map, translation_map)
 
     print(f"\n{'=' * 55}")
     print(f"  Dịch thuật hoàn tất!")
     print(f"  Thời gian  : {elapsed:.1f}s")
     print(f"  Số câu dịch: {len(translation_map)}")
-    print(f"  Output     : {TRANSLATION_MAP_PATH}")
+    print(f"  Output     : {job.translation_map}")
     print(f"{'=' * 55}")
 
     # Preview 5 câu đầu
@@ -440,6 +446,8 @@ def run_translation():
 
 
 if __name__ == "__main__":
-    argparse.ArgumentParser(description="Monggu Translate - Translation Pass").parse_args()
-    sys.exit(0 if run_translation() else 1)
+    parser = argparse.ArgumentParser(description="Monggu Translate - Translation Pass")
+    parser.add_argument("--input", "-i", type=str, default=VIDEO_PATH, help="Đường dẫn video (đã chạy OCR)")
+    args = parser.parse_args()
+    sys.exit(0 if run_translation(args.input) else 1)
 
