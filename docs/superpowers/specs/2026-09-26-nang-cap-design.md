@@ -67,13 +67,12 @@ Mọi mục đều đã đọc code. Mục gắn **[dữ liệu]** đã đối c
 
 | | Dự án con | Giải quyết | Vì sao đứng ở vị trí này |
 |---|---|---|---|
-| **A** | Đầu ra đúng, hoặc báo lỗi rõ | 1–4 | Lỗi người xem thấy ngay; diff nhỏ; kiểm chứng offline trên dữ liệu thật |
-| **B** | Mỗi video một thư mục job | 5–10 | Sửa tận gốc việc lẫn dữ liệu; nền cho chạy hàng loạt |
-| **C** | Lõi LLM chung | 11 | Xóa khoảng 450–500 dòng; reel gốc cần gọi LLM |
-| **D** | Lõi media chung + reel gốc | 12–13 | Cần có C để viết kịch bản |
+| **A** | Đầu ra đúng, hoặc báo lỗi rõ ✅ | 1–4 | Lỗi người xem thấy ngay; diff nhỏ; kiểm chứng offline trên dữ liệu thật |
+| **B** | Dịch theo cốt truyện, đúng nhân vật, có cache: B1 lõi LLM + cache → B2 thư mục job + series → B3 dịch 3 bước | 5–11 | Yêu cầu chính của user (2026-09-26): hết sai xưng hô, nhầm người nói, sai ý theo cốt truyện |
+| **D** | Lõi media chung + reel gốc | 12–13 | Cần lõi LLM (B1) để viết kịch bản |
 | **E** | Dọn dẹp, tài liệu, tăng tốc OCR | 14–15 | Làm cuối, khi cấu trúc đã ổn |
 
-Mỗi dự án con đi đủ vòng spec → plan → code. Tài liệu này chi tiết A; spec của B–E viết khi tới lượt.
+Mỗi dự án con đi đủ vòng spec → plan → code. Tài liệu này chi tiết A. B có spec riêng: `2026-09-26-dich-theo-cot-truyen-design.md`. Dự án con C cũ (lõi LLM) đã gộp vào B, thành B1.
 
 ## 5. Dự án con A — Đầu ra đúng, hoặc báo lỗi rõ
 
