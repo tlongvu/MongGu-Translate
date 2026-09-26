@@ -1,7 +1,7 @@
 # Monggu Translate
 
 Dịch phụ đề video Trung Quốc sang tiếng Việt: **OCR → dịch theo cốt truyện, đúng nhân vật → render lại video**.
-Thư mục `story_engine/` làm reel gốc (chưa gắn vào pipeline).
+Thư mục `story_engine/` làm reel gốc: viết kịch bản tay, hoặc `--idea "…"` để LLM viết kịch bản (dùng chung lõi `llm.py` và cache). Xem `story_engine/README.md`.
 
 ## Cài đặt
 

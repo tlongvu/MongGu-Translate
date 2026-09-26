@@ -117,6 +117,30 @@ def test_ask_json_check_rejects_incomplete_answer_without_caching():
         _cleanup(d)
 
 
+def test_ask_json_check_that_raises_is_a_rejection_not_a_crash():
+    d = _fresh_cache()
+    try:
+        # check vấp dữ liệu sai kiểu (list trong 'in dict') → coi là trả lời sai, vẫn sang provider sau
+        check = lambda o: o["char"] in {"mc": 1}
+        got = llm.ask_json("sys", "q", check=check, providers=[("a", lambda s, u, t: '{"char": ["mc"]}'),
+                                                                ("b", lambda s, u, t: '{"char": "mc"}')])
+        assert got == {"char": "mc"}
+    finally:
+        _cleanup(d)
+
+
+def test_ask_json_rechecks_cached_answer():
+    d = _fresh_cache()
+    try:
+        replies = iter(['{"v": 1}', '{"v": 2}'])
+        fake = [("fake", lambda s, u, t: next(replies))]
+        assert llm.ask_json("sys", "q", providers=fake) == {"v": 1}
+        # luật check chặt hơn (vd sau khi nâng cấp): câu trả lời cũ trong cache không qua → hỏi lại, không trả đồ cũ
+        assert llm.ask_json("sys", "q", providers=fake, check=lambda o: o["v"] == 2) == {"v": 2}
+    finally:
+        _cleanup(d)
+
+
 class _FakeGeminiError(Exception):
     def __init__(self, code, msg):
         super().__init__(f"{code} {msg}")

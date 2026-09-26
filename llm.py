@@ -177,6 +177,16 @@ def _default_providers() -> list:
     return out
 
 
+def _reject_reason(obj, check):
+    """None = dùng được; ngược lại là lý do bỏ câu trả lời (không cache; hỏi lại / đổi provider)."""
+    if obj is None:
+        return "JSON hỏng"
+    try:
+        return None if check is None or check(obj) else "trả lời thiếu"
+    except Exception as e:  # LLM trả sai kiểu làm check vấp → trả lời sai, không làm sập cả chuỗi provider
+        return f"trả lời sai ({type(e).__name__}: {str(e)[:80]})"
+
+
 def ask_json(system: str, user: str, temperature: float = 0.1, providers=None, check=None):
     """Hỏi LLM, trả về JSON đã parse (dict/list). Cache theo (system, user, temperature).
     check: hàm(obj) -> bool; False = trả lời thiếu/sai (vd bỏ sót dòng) → KHÔNG cache, thử lại,
@@ -184,7 +194,7 @@ def ask_json(system: str, user: str, temperature: float = 0.1, providers=None, c
     providers: [(tên, hàm)] — mặc định Gemini rồi DeepSeek; test truyền provider giả."""
     key = _cache_key(system, user, temperature)
     cached = _cache_get(key)
-    if cached is not None:
+    if cached is not None and _reject_reason(cached, check) is None:  # luật check chặt hơn → hỏi lại
         return cached
 
     plist = providers if providers is not None else _default_providers()
@@ -201,8 +211,9 @@ def ask_json(system: str, user: str, temperature: float = 0.1, providers=None, c
                 if attempt == 0:
                     time.sleep(RETRY_DELAY)
                 continue
-            if obj is None or (check is not None and not check(obj)):
-                errors.append(f"{name}: " + ("JSON hỏng" if obj is None else "trả lời thiếu"))
+            why = _reject_reason(obj, check)
+            if why:
+                errors.append(f"{name}: {why}")
                 continue
             _cache_put(key, obj, name)
             return obj

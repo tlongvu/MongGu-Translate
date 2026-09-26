@@ -97,8 +97,10 @@ python make_story_reel.py --idea "Mèo Chuối đi thi tuyển đệ tử nhưng
 ```
 
 Với `--idea`:
+- Cần cài thêm `pip install -r ../requirements.txt` và API key trong `D:\monggutranslate\.env`, giống pipeline dịch.
 - LLM **chỉ được dùng** nhân vật, cảm xúc và bối cảnh có trong `characters.json`. Kịch bản dùng id lạ sẽ bị từ chối, không cache, và hỏi lại.
-- Kịch bản được lưu vào `kich_ban/kb_<thời gian>.json`. Muốn sửa lời thoại, sửa file đó rồi dựng lại bằng `--script kich_ban/<file>.json`.
+- Kịch bản được lưu vào `kich_ban/kb_<thời gian>.json`, hoặc vào đường dẫn `--script` nếu có đưa. File đã có thì **không bao giờ bị ghi đè**: lệnh sẽ dừng và báo.
+- Muốn sửa lời thoại, sửa file đó rồi dựng lại bằng `--script kich_ban/<file>.json`, **bỏ `--idea`**.
 - Có thể thêm `"mo_ta"` (tính cách, quan hệ) cho từng nhân vật trong `characters.json` để kịch bản hợp vai hơn.
 - Cùng một ý tưởng thì cache trả về cùng một kịch bản. Muốn một bản khác thì đổi câu ý tưởng.
 - Kịch bản viết tay (`--script`) cũng được kiểm tra với thư viện trước khi dựng.
