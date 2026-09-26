@@ -13,11 +13,19 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import jobs  # noqa: E402
 
 
+_ORIG_DIRS = (jobs.JOBS_DIR, jobs.SERIES_DIR)
+
+
 def _setup():
     d = tempfile.mkdtemp()
     jobs.JOBS_DIR = os.path.join(d, "jobs")
     jobs.SERIES_DIR = os.path.join(d, "series")
     return d
+
+
+def _cleanup(d):
+    jobs.JOBS_DIR, jobs.SERIES_DIR = _ORIG_DIRS
+    shutil.rmtree(d, ignore_errors=True)
 
 
 def _video(d, sub, name, content):
@@ -45,7 +53,7 @@ def test_open_job_create_and_reopen():
         assert j.lines == os.path.join(j.dir, "lines.json")
         assert jobs.open_job(v).dir == j.dir, "Mở lại cùng video → cùng job"
     finally:
-        shutil.rmtree(d, ignore_errors=True)
+        _cleanup(d)
 
 
 def test_open_job_rejects_other_video_with_same_name():
@@ -58,7 +66,7 @@ def test_open_job_rejects_other_video_with_same_name():
         except jobs.JobError:
             pass
     finally:
-        shutil.rmtree(d, ignore_errors=True)
+        _cleanup(d)
 
 
 def test_series_shares_profiles_between_episodes():
@@ -69,7 +77,34 @@ def test_series_shares_profiles_between_episodes():
         assert j1.story == j2.story == os.path.join(jobs.SERIES_DIR, "daosi", "story.json")
         assert jobs.open_job(os.path.join(d, "a", "daosiep1.mp4")).series == "daosi", "Series được nhớ trong job.json"
     finally:
-        shutil.rmtree(d, ignore_errors=True)
+        _cleanup(d)
+
+
+def test_open_job_errors_are_clean_and_side_effect_free():
+    d = _setup()
+    try:
+        v = _video(d, "a", "tap1.mp4", b"video-1")
+        try:
+            jobs.open_job(v)                                    # chưa có job, không create
+        except jobs.JobError:
+            pass
+        assert not os.path.exists(jobs.JOBS_DIR), "create=False không được tạo thư mục nào"
+        for bad in ("..\\x", "a:b", "a?b", "  "):
+            try:
+                jobs.open_job(v, series=bad, create=True)
+                raise AssertionError(f"Tên series {bad!r} phải bị từ chối")
+            except jobs.JobError:
+                pass
+        j = jobs.open_job(v, create=True)
+        with open(os.path.join(j.dir, "job.json"), "w", encoding="utf-8") as f:
+            f.write("{hỏng")
+        try:
+            jobs.open_job(v)
+            raise AssertionError("job.json hỏng phải báo JobError, không phải traceback")
+        except jobs.JobError:
+            pass
+    finally:
+        _cleanup(d)
 
 
 if __name__ == "__main__":

@@ -74,24 +74,30 @@ def main():
     print("=" * 60)
     print(f"  Input   : {args.input}")
     print(f"  Only    : {args.only}")
-    try:
-        job = open_job(args.input, args.series, create=True)
-    except JobError as e:
-        print(f"  [ERROR] {e}")
-        sys.exit(1)
-    print(f"  Job     : {job.dir}" + (f"  (series: {job.series})" if job.series else ""))
 
     run_ocr = args.only in ("all", "ocr")
     run_tr = args.only in ("all", "translate")
     run_rd = args.only in ("all", "render")
 
+    try:  # chỉ OCR mới được tạo job mới; --only translate/render cần job đã có
+        job = open_job(args.input, args.series, create=run_ocr)
+    except JobError as e:
+        print(f"  [ERROR] {e}")
+        sys.exit(1)
+    print(f"  Job     : {job.dir}" + (f"  (series: {job.series})" if job.series else ""))
+
     if args.skip_existing:
         if run_ocr and os.path.exists(job.ocr_data):
-            with open(job.ocr_data, encoding="utf-8") as f:
-                if json.load(f).get("complete", True):
-                    print("  [SKIP] OCR đã xong cho video này → bỏ qua OCR")
-                    run_ocr = False
-        if run_tr and os.path.exists(job.lines):
+            try:
+                with open(job.ocr_data, encoding="utf-8") as f:
+                    done = json.load(f)
+            except ValueError:
+                done = {"complete": False}
+            # Dữ liệu của lần chạy --test chỉ phủ ~20s đầu → không coi là xong khi chạy thật
+            if done.get("complete", True) and (args.test or not done.get("test_mode")):
+                print("  [SKIP] OCR đã xong cho video này → bỏ qua OCR")
+                run_ocr = False
+        if run_tr and not run_ocr and os.path.exists(job.lines):  # OCR vừa chạy lại → bản dịch cũ không còn khớp
             print("  [SKIP] Đã có bản dịch cho video này → bỏ qua dịch")
             run_tr = False
 

@@ -35,7 +35,7 @@ jobs/<tên-video>/          mỗi video một thư mục
   ocr_data.json
   story.json               hồ sơ truyện (video độc lập); video thuộc series dùng series/<bộ>/story.json
   lines.json               từng lần xuất hiện của từng câu
-  output.mp4
+  <tên>_vi.mp4             video ra (chỉ được thay ở bước cuối của render)
 series/<tên-bộ>/story.json dùng chung cho mọi tập; mỗi tập chỉ bổ sung
 cache/llm.sqlite           cache lời gọi LLM
 ```

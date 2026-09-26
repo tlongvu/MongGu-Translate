@@ -431,7 +431,12 @@ def run_translation(video_path: str):
         if job.series or not story:
             print(f"\n[1/4] Hồ sơ truyện ({'series ' + job.series if job.series else 'video lẻ'})...")
             story = build_story(lines, long_lived_texts(lines, ocr_data.get("fps") or 25.0), story)
-            write_json_atomic(job.story, story)
+            if ocr_data.get("test_mode"):
+                # Hồ sơ dựng từ ~20s của OCR --test chỉ dùng tạm: lưu vào story.json (nhất là của series)
+                # thì theo quy tắc "chỉ bổ sung, không ghi đè" sẽ không bao giờ được sửa lại.
+                print("  (OCR --test: hồ sơ truyện chỉ dùng tạm cho lần này, KHÔNG lưu)")
+            else:
+                write_json_atomic(job.story, story)
         else:
             print(f"\n[1/4] Dùng hồ sơ truyện có sẵn: {job.story}")
         print(f"  {len(story.get('nhan_vat') or {})} nhân vật, {len(story.get('xung_ho') or {})} cặp xưng hô, "

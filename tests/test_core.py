@@ -149,8 +149,12 @@ def test_layout_cache_hits():
 
 def test_run_translation_fails_without_input():
     d = tempfile.mkdtemp()
-    orig_jobs, orig_load = jobs.JOBS_DIR, tp.load_ocr_data
+    orig_jobs, orig_load, orig_ask = jobs.JOBS_DIR, tp.load_ocr_data, tp.ask_json
+
+    def no_llm(*a, **kw):
+        raise AssertionError("Test này không được gọi LLM (sẽ tốn API thật)")
     try:
+        tp.ask_json = no_llm
         jobs.JOBS_DIR = os.path.join(d, "jobs")
         v = os.path.join(d, "tap1.mp4")
         with open(v, "wb") as f:
@@ -164,7 +168,7 @@ def test_run_translation_fails_without_input():
         tp.load_ocr_data = lambda path: {"unique_texts": ["你好"], "text_segments": [{}], "complete": False}
         assert tp.run_translation(v) is False                   # OCR bị ngắt giữa chừng
     finally:
-        jobs.JOBS_DIR, tp.load_ocr_data = orig_jobs, orig_load
+        jobs.JOBS_DIR, tp.load_ocr_data, tp.ask_json = orig_jobs, orig_load, orig_ask
         shutil.rmtree(d, ignore_errors=True)
 
 

@@ -22,6 +22,7 @@ if hasattr(sys.stderr, 'reconfigure'):
 import cv2
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
+import contextlib
 import time
 import os
 import json
@@ -1074,7 +1075,8 @@ def concatenate_videos(temp_files, output_path):
     list_file = os.path.join(os.path.dirname(os.path.abspath(output_path)), "_concat_list.txt")
     with open(list_file, "w", encoding="utf-8") as f:
         for tf in temp_files:
-            f.write(f"file '{os.path.abspath(tf)}'\n")
+            # Cú pháp concat của ffmpeg: dấu ' trong đường dẫn phải viết thành '\'' (tên video có dấu nháy)
+            f.write("file '" + os.path.abspath(tf).replace("'", "'\\''") + "'\n")
 
     cmd = ["ffmpeg", "-y", "-f", "concat", "-safe", "0",
            "-i", list_file, "-c", "copy", output_path]
@@ -1188,6 +1190,9 @@ if __name__ == "__main__":
     if args.test:
         total_frames = min(total_frames, TEST_FRAMES)
         print(f"  [TEST MODE] Gioi han {TEST_FRAMES} frames")
+    elif ocr_data.get("test_mode"):
+        print(f"  [WARN] Dữ liệu OCR là của lần chạy --test (chỉ {total_frames} frame đầu) → video ra sẽ ngắn. "
+              f"Chạy lại OCR không --test để có video đầy đủ.")
 
     print(f"  OCR detections : {len(frame_detections)} keyframes")
     print(f"  Text segments  : {len(text_segments)} tracked appearances")
@@ -1206,7 +1211,10 @@ if __name__ == "__main__":
 
     # ocr_pass ghi video đã convert vào thư mục job (chỉ lưu basename)
     converted_path = os.path.join(job.dir, converted_video)
-    if converted_video and converted_video != original_video and os.path.exists(converted_path):
+    if converted_video and converted_video != original_video:
+        if not os.path.exists(converted_path):
+            print(f"  [ERROR] Thiếu video đã convert fps: {converted_path} (bị xóa?) — chạy lại OCR để tạo lại.")
+            sys.exit(1)
         video_path = converted_path
         audio_source = args.input  # video convert đã bỏ tiếng (-an); tiếng lấy từ video gốc
     else:
@@ -1280,68 +1288,71 @@ if __name__ == "__main__":
     ]
 
     wall_start = time.time()
+    # File trung gian nằm trong job; video ra CHỈ được thay ở bước cuối (render lỗi giữa chừng không làm
+    # mất video tốt của lần trước); luôn dọn file tạm, kể cả khi lỗi / Ctrl+C.
+    staging = os.path.join(job.dir, "_render_tmp.mp4")
+    staging_audio = os.path.join(job.dir, "_render_tmp_audio.mp4")
 
+    def _publish(src, dst):
+        try:
+            os.replace(src, dst)
+        except PermissionError:
+            print(f"  [ERROR] Không ghi đè được {dst} — file đang mở ở chương trình khác (trình phát video?). "
+                  f"Đóng lại rồi chạy lại render.")
+            sys.exit(1)
+
+    mux_ok = True
     try:
         with mp.Pool(processes=num_workers) as pool:
             results = pool.map(process_chunk, worker_args)
-    except BaseException:
-        for tf in temp_files:  # worker lỗi → dọn chunk dở rồi báo lỗi
-            if os.path.exists(tf):
-                os.remove(tf)
-        raise
+        print(f"\n  All workers finished in {time.time() - wall_start:.1f}s")
 
-    wall_elapsed = time.time() - wall_start
-    print(f"\n  All workers finished in {wall_elapsed:.1f}s")
+        # ── Concatenate ──
+        print(f"\n[4/4] Concatenating -> {output_video}...")
+        ordered_temps = [r[1] for r in sorted(results, key=lambda r: r[0])]
+        concatenate_videos(ordered_temps, staging)
 
-    # ── Concatenate ──
-    print(f"\n[4/4] Concatenating -> {output_video}...")
-    sorted_results = sorted(results, key=lambda r: r[0])
-    ordered_temps = [r[1] for r in sorted_results]
-
-    concatenate_videos(ordered_temps, output_video)
-
-    # ── Mux audio từ video gốc ──
-    mux_ok = True
-    if args.no_audio:
-        print(f"\n[5/5] Bỏ qua mux audio (--no-audio)")
-        print(f"  → Dùng audio_tools.py để xử lý audio riêng:")
-        print(f"    python audio_tools.py extract {video_path}")
-        print(f"    python audio_tools.py mux {output_video} <audio_file>")
-    else:
-        print(f"\n[5/5] Mux audio tu video goc...")
-        video_no_audio = output_video
-        video_with_audio = output_video.replace(".mp4", "_audio.mp4")
-        mux_cmd = [
-            "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-            "-i", video_no_audio,      # Video đã render (không có audio)
-            "-i", audio_source,         # Video gốc (lấy audio)
-            "-c:v", "copy",             # Copy video stream (không re-encode)
-            "-c:a", "aac",              # Encode audio AAC
-            "-map", "0:v:0",            # Video từ file đầu
-            "-map", "1:a:0?",           # Audio từ file gốc
-            "-shortest",                # Cắt theo stream ngắn nhất
-            video_with_audio
-        ]
-        try:
-            result = subprocess.run(mux_cmd, capture_output=True, text=True, timeout=300)
-            if result.returncode == 0:
-                # Thay thế file không audio bằng file có audio
-                os.replace(video_with_audio, output_video)
-                print(f"  Audio mux OK")
-            else:
-                print(f"  [ERROR] Mux audio thất bại: {result.stderr[:200]}")
+        # ── Mux audio từ video gốc ──
+        if args.no_audio:
+            print(f"\n[5/5] Bỏ qua mux audio (--no-audio)")
+            print(f"  → Dùng audio_tools.py để xử lý audio riêng:")
+            print(f"    python audio_tools.py extract {video_path}")
+            print(f"    python audio_tools.py mux {output_video} <audio_file>")
+            _publish(staging, output_video)
+        else:
+            print(f"\n[5/5] Mux audio tu video goc...")
+            mux_cmd = [
+                "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+                "-i", staging,              # Video đã render (không có audio)
+                "-i", audio_source,         # Video gốc (lấy audio)
+                "-c:v", "copy",             # Copy video stream (không re-encode)
+                "-c:a", "aac",              # Encode audio AAC
+                "-map", "0:v:0",            # Video từ file đầu
+                "-map", "1:a:0?",           # Audio từ file gốc
+                "-shortest",                # Cắt theo stream ngắn nhất
+                staging_audio
+            ]
+            try:
+                result = subprocess.run(mux_cmd, capture_output=True, text=True, timeout=300)
+                if result.returncode == 0:
+                    _publish(staging_audio, output_video)
+                    print(f"  Audio mux OK")
+                else:
+                    print(f"  [ERROR] Mux audio thất bại: {result.stderr[:200]}")
+                    mux_ok = False
+            except Exception as e:
+                print(f"  [ERROR] ffmpeg không khả dụng cho audio mux: {e}")
                 mux_ok = False
-        except Exception as e:
-            print(f"  [ERROR] ffmpeg không khả dụng cho audio mux: {e}")
-            mux_ok = False
-
-    # Cleanup temp files
-    for tf in temp_files:
-        if os.path.exists(tf):
-            os.remove(tf)
+            if not mux_ok:
+                silent = os.path.splitext(output_video)[0] + "_khong_tieng.mp4"
+                _publish(staging, silent)
+                print(f"  Video (không tiếng) ở: {silent} — video ra của lần trước (nếu có) giữ nguyên")
+    finally:
+        for tf in temp_files + [staging, staging_audio]:
+            with contextlib.suppress(OSError):
+                os.remove(tf)
 
     if not mux_ok:
-        print(f"  Video (không tiếng) vẫn ở: {output_video}")
         sys.exit(1)
 
     total_time = time.time() - wall_start

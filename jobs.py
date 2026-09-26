@@ -29,15 +29,27 @@ def open_job(video_path: str, series: str = None, create: bool = False) -> Simpl
     series: tên bộ; video lẻ để None. Truyền series khác lần trước → cập nhật job.json."""
     if not os.path.isfile(video_path):
         raise JobError(f"Không thấy video: {video_path}")
+    if series is not None:
+        series = series.strip()
+        if not series or os.path.basename(series) != series or any(c in series for c in ':?*<>|"'):
+            raise JobError(f"Tên series không hợp lệ: {series!r} — chỉ dùng chữ, số, dấu cách, '-', '_'")
     name = os.path.splitext(os.path.basename(video_path))[0]
     d = os.path.join(JOBS_DIR, name)
     meta_path = os.path.join(d, "job.json")
     fp = fingerprint(video_path)
     changed = False
     if os.path.exists(meta_path):
-        with open(meta_path, encoding="utf-8") as f:
-            meta = json.load(f)
+        try:
+            with open(meta_path, encoding="utf-8") as f:
+                meta = json.load(f)
+            if not isinstance(meta, dict):
+                raise ValueError("không phải JSON object")
+        except (OSError, ValueError) as e:
+            raise JobError(f"jobs/{name}/job.json hỏng ({e}) — sửa hoặc xóa file đó rồi chạy lại OCR.")
         if meta.get("fingerprint") != fp:
+            if meta.get("video") == os.path.abspath(video_path):
+                raise JobError(f"{video_path} đã thay đổi so với lúc OCR (bị encode / cắt lại?) — "
+                               f"xóa thư mục jobs/{name}/ để làm lại từ đầu.")
             raise JobError(f"jobs/{name}/ đang là của video khác ({meta.get('video')}). "
                            f"Đổi tên video, hoặc xóa thư mục job cũ nếu không cần nữa.")
     elif create:
