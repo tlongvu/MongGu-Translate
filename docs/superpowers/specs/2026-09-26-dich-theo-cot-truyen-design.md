@@ -155,3 +155,49 @@ cache/llm.sqlite           cache lời gọi LLM
 - thêm test `translate_contextual` với `ask_json` giả: thiếu câu → hỏi lại đúng các câu thiếu; vẫn thiếu → `LLMError`; biến thể mượn bản dịch dòng giống nhất.
 
 Không chạy `translate_pass.py` thật (sẽ gọi API). Trường hợp thiếu `ocr_data` đã có test `run_translation` trả `False`; chỉ cần sửa theo chữ ký mới.
+
+## 8. B2 chi tiết — Thư mục job + series
+
+### `jobs.py` (mới)
+
+- `open_job(video_path, series=None, create=False) -> SimpleNamespace` trả về các đường dẫn:
+  - `dir = jobs/<tên file video không đuôi>/`
+  - `ocr_data`, `translation_map`, `output = <dir>/<tên>_vi.mp4`
+  - `profiles`, `glossary` — nằm ở `series/<bộ>/` nếu video thuộc series, ngược lại nằm ngay trong `dir`
+- `jobs/<tên>/job.json` = `{"video": đường dẫn tuyệt đối, "fingerprint": "<kích thước>-<sha1 1MB đầu>", "series": tên hoặc null}`.
+  - Job đã có mà dấu vân tay khác (hai video trùng tên) → `JobError`, không trộn dữ liệu.
+  - Chưa có job mà `create=False` → `JobError` "chạy OCR trước".
+- `--series` khác với giá trị đã lưu → cập nhật `job.json`, kèm thông báo.
+- `config.py` có thêm `JOBS_DIR`, `SERIES_DIR`; ghi đè được qua `MONGGU_CONFIG`, nên test và chạy thử có thể trỏ sang thư mục tạm.
+
+### Các pass
+
+- **`ocr_pass.py`:**
+  - ghi `ocr_data` vào job;
+  - video đã convert fps nằm **trong thư mục job**;
+  - `ocr_data` có thêm `"complete"` (false ở checkpoint / khi bị ngắt) và `"test_mode"`;
+  - thêm tham số `--series`.
+- **`translate_pass.py`:**
+  - `run_translation(video_path)` đọc và ghi trong job;
+  - từ chối `ocr_data` chưa `complete`;
+  - hồ sơ nhân vật và glossary lấy từ job hoặc series; **không còn đọc** `glossary.json` và `character_profiles.json` toàn cục (hai file vẫn để nguyên trên đĩa).
+- **`script.py`:**
+  - đọc dữ liệu từ job; từ chối `ocr_data` chưa `complete`;
+  - lấy video đã convert trong job;
+  - xuất ra `jobs/<tên>/<tên>_vi.mp4`;
+  - file tạm (`_temp_chunk_*`, danh sách concat) nằm trong job và **luôn được dọn** (`finally`);
+  - bỏ `get_next_output_path` / `OUTPUT_PREFIX`.
+- **`pipeline.py`:**
+  - thêm `--series`;
+  - `--skip-existing` xét trong job: OCR bỏ qua khi `ocr_data` đã `complete`, dịch bỏ qua khi đã có `translation_map`.
+- **`config.py` — prompt:**
+  - bỏ đoạn bối cảnh viết cứng của video cũ (dòng 105–108);
+  - bỏ đoạn đòi "JSON array" (mâu thuẫn với Phase 1 đòi object; đường dịch rời rạc dùng array đã bị xóa ở B1);
+  - `TRANSLATION_GENRE` đổi thành trung tính. B3 sẽ lấy thể loại và tóm tắt từ hồ sơ truyện.
+
+### Kiểm chứng B2 (không tốn API)
+
+- **Test `jobs`:** tạo job; mở lại cùng video; hai video trùng tên → `JobError`; series → hồ sơ nằm ở `series/`.
+- **Test `run_translation`** trên job tạm, với `ask_json` giả.
+- **Render thử trọn vẹn** trên job tạm (`JOBS_DIR` trỏ vào scratch): output nằm trong job, không còn file tạm, có audio.
+- **`script.py` với video không có job** → exit 1 kèm hướng dẫn.
