@@ -255,6 +255,9 @@ OCR_DATA_PATH = os.path.join(_SCRIPT_DIR, "ocr_data.json")
 TRANSLATION_MAP_PATH = os.path.join(_SCRIPT_DIR, "translation_map.json")
 # Cache lời gọi LLM (llm.ask_json): khóa = hash prompt đầy đủ → an toàn giữa các video
 LLM_CACHE_PATH = os.path.join(_SCRIPT_DIR, "cache", "llm.sqlite")
+# Dữ liệu theo video (jobs.py): jobs/<tên-video>/…; series dùng chung hồ sơ: series/<tên-bộ>/…
+JOBS_DIR = os.path.join(_SCRIPT_DIR, "jobs")
+SERIES_DIR = os.path.join(_SCRIPT_DIR, "series")
 
 # ──────────────────────────────────────────────
 # OVERRIDE PER-VIDEO (tùy chọn)

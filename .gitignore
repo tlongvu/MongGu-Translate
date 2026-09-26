@@ -26,3 +26,4 @@ __pycache__/
 debug_*.txt
 .claude/*.lock
 cache/
+jobs/
