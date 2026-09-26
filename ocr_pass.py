@@ -34,11 +34,12 @@ from config import (
     VIDEO_PATH, TEST_MODE, TEST_FRAMES,
     OCR_LANG, OCR_INTERVAL_SEC, OCR_CONFIDENCE_THRESHOLD,
     OCR_RESIZE_FACTOR, CROP_TOP_RATIO, WATERMARK_PATTERNS,
-    SUPPRESS_TEXTS, OCR_DATA_PATH, TARGET_FPS,
+    SUPPRESS_TEXTS, TARGET_FPS,
     NUM_WORKERS, USE_GPU,
     OCR_SCENE_DIFF, OCR_SCENE_DIFF_THRESHOLD, OCR_SCENE_DIFF_WIDTH, OCR_MAX_SKIP_SEC,
 )
 from utils import write_json_atomic
+from jobs import open_job, JobError
 
 
 def calculate_iou(boxA, boxB):
@@ -292,10 +293,10 @@ def _downscale_gray(frame, target_w: int):
     return cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
 
 
-def convert_video_fps(input_path: str, target_fps: int) -> str:
+def convert_video_fps(input_path: str, target_fps: int, out_dir: str) -> str:
     """Convert video to target FPS using ffmpeg NVENC. Returns path to converted video."""
-    base, ext = os.path.splitext(input_path)
-    converted_path = f"{base}_{target_fps}fps{ext}"
+    base, ext = os.path.splitext(os.path.basename(input_path))
+    converted_path = os.path.join(out_dir, f"{base}_{target_fps}fps{ext}")
 
     # Check if already converted
     if os.path.exists(converted_path):
@@ -340,8 +341,8 @@ def convert_video_fps(input_path: str, target_fps: int) -> str:
     return converted_path
 
 
-def _save_intermediate_checkpoint(video_path, original_video_path, fps, width, height, total_frames, ocr_interval_frames, unique_texts, frame_detections):
-    """Lưu tiến trình OCR tạm thời."""
+def _save_intermediate_checkpoint(data_path, test_mode, video_path, original_video_path, fps, width, height, total_frames, ocr_interval_frames, unique_texts, frame_detections):
+    """Lưu tiến trình OCR tạm thời (complete=False → dịch/render từ chối dùng)."""
     try:
         temp_segments = build_text_segments(frame_detections, fps, ocr_interval_frames)
         ocr_data = {
@@ -352,24 +353,33 @@ def _save_intermediate_checkpoint(video_path, original_video_path, fps, width, h
             "height": height,
             "total_frames": total_frames,
             "ocr_interval_frames": ocr_interval_frames,
+            "complete": False,
+            "test_mode": test_mode,
             "unique_texts": unique_texts,
             "frame_detections": frame_detections,
             "text_segments": temp_segments,
         }
-        write_json_atomic(OCR_DATA_PATH, ocr_data)
+        write_json_atomic(data_path, ocr_data)
         print(f"\n  [CHECKPOINT] Đã tự động lưu tiến trình: {len(frame_detections)} frames.")
     except Exception as e:
         print(f"\n  [WARN] Không thể lưu checkpoint: {e}")
 
 
-def run_ocr_pass(video_path: str, test_mode: bool = False, test_frames: int = 300):
+def run_ocr_pass(video_path: str, test_mode: bool = False, test_frames: int = 300, series: str = None):
     """
     Pass 1: OCR toàn bộ video, thu thập text + vị trí.
-    Output: ocr_data.json. Trả về ocr_data, hoặc None nếu không mở được video / bị Ctrl+C.
+    Output: jobs/<tên>/ocr_data.json. Trả về ocr_data, hoặc None nếu không mở được video / bị Ctrl+C.
     """
     print("=" * 55)
     print("  Monggu Translate - Pass 1: OCR Scan")
     print("=" * 55)
+
+    try:
+        job = open_job(video_path, series, create=True)
+    except JobError as e:
+        print(f"  [ERROR] {e}")
+        return None
+    data_path = job.ocr_data
 
     # ── Phân tích video ──
     print("\n[1/3] Phân tích video...")
@@ -399,7 +409,7 @@ def run_ocr_pass(video_path: str, test_mode: bool = False, test_frames: int = 30
     if TARGET_FPS > 0 and fps > TARGET_FPS + 1:
         print(f"\n  Video {fps:.0f}fps > target {TARGET_FPS}fps -> convert de giam workload")
         cap.release()
-        video_path = convert_video_fps(video_path, TARGET_FPS)
+        video_path = convert_video_fps(video_path, TARGET_FPS, job.dir)
         cap = cv2.VideoCapture(video_path)
         fps = cap.get(cv2.CAP_PROP_FPS)
         width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -438,9 +448,9 @@ def run_ocr_pass(video_path: str, test_mode: bool = False, test_frames: int = 30
     start_frame = 0
 
     # ── Kiểm tra checkpoint cũ để resume ──
-    if os.path.exists(OCR_DATA_PATH):
+    if os.path.exists(data_path):
         try:
-            with open(OCR_DATA_PATH, "r", encoding="utf-8") as f:
+            with open(data_path, "r", encoding="utf-8") as f:
                 old_data = json.load(f)
             # Kiểm tra đúng video
             if (old_data.get("original_video") == os.path.basename(original_video_path) or
@@ -578,6 +588,7 @@ def run_ocr_pass(video_path: str, test_mode: bool = False, test_frames: int = 30
                 last_ckpt_submitted = submitted
                 collect_results(blocking=False)
                 _save_intermediate_checkpoint(
+                    data_path, test_mode,
                     video_path, original_video_path, fps, width, height, total_frames,
                     ocr_interval_frames, unique_texts, frame_detections
                 )
@@ -617,19 +628,21 @@ def run_ocr_pass(video_path: str, test_mode: bool = False, test_frames: int = 30
         "height": height,
         "total_frames": total_frames,
         "ocr_interval_frames": ocr_interval_frames,
+        "complete": not interrupted,
+        "test_mode": test_mode,
         "unique_texts": unique_texts,
         "frame_detections": frame_detections,
         "text_segments": text_segments,
     }
 
-    write_json_atomic(OCR_DATA_PATH, ocr_data)
+    write_json_atomic(data_path, ocr_data)
 
     if interrupted:
         print(f"\n{'=' * 55}")
         print(f"  ĐÃ LƯU TIẾN TRÌNH BỊ NGẮT QUÃNG!")
         print(f"  Frames scanned: {ocr_count} (Tổng cộng: {len(frame_detections)})")
         print(f"  Unique texts  : {len(unique_texts)}")
-        print(f"  Output        : {OCR_DATA_PATH}")
+        print(f"  Output        : {data_path}")
         print(f"  Bạn có thể chạy lại script để tiếp tục quét từ frame {frame_idx}.")
         print(f"{'=' * 55}")
         return None  # Chưa xong → báo lỗi để pipeline không chạy tiếp với dữ liệu dở dang
@@ -642,7 +655,7 @@ def run_ocr_pass(video_path: str, test_mode: bool = False, test_frames: int = 30
             print(f"  Frames skipped: {skipped_diff} (trùng lặp, tiết kiệm OCR)")
         print(f"  Unique texts  : {len(unique_texts)}")
         print(f"  Text segments : {len(text_segments)}")
-        print(f"  Output        : {OCR_DATA_PATH}")
+        print(f"  Output        : {data_path}")
         print(f"{'=' * 55}")
 
     return ocr_data
@@ -652,7 +665,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Monggu Translate - OCR Pass")
     parser.add_argument("--input", "-i", type=str, default=VIDEO_PATH, help="Đường dẫn video")
     parser.add_argument("--test", action="store_true", default=TEST_MODE, help="Test mode (giới hạn frames)")
+    parser.add_argument("--series", "-s", type=str, default=None, help="Tên bộ (series) nếu video là một tập")
     args = parser.parse_args()
 
-    result = run_ocr_pass(args.input, test_mode=args.test, test_frames=TEST_FRAMES)
+    result = run_ocr_pass(args.input, test_mode=args.test, test_frames=TEST_FRAMES, series=args.series)
     sys.exit(0 if result else 1)
