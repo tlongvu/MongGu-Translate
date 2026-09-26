@@ -180,16 +180,6 @@ def _make_segment(text: str, seg: dict, fps: float) -> dict:
     }
 
 
-def _has_chinese(text: str) -> bool:
-    """Kiểm tra text có chứa ký tự Hán không."""
-    return any('\u4e00' <= ch <= '\u9fff' or '\u3400' <= ch <= '\u4dbf' for ch in text)
-
-
-def _has_latin(text: str) -> bool:
-    """Kiểm tra text có chứa ký tự Latin (a-z, A-Z) không."""
-    return any('a' <= ch <= 'z' or 'A' <= ch <= 'Z' for ch in text)
-
-
 def is_watermark(text: str) -> bool:
     """Kiểm tra text có phải watermark/UI element không.
 
@@ -211,16 +201,8 @@ def is_watermark(text: str) -> bool:
         if pattern.lower() in text_lower:
             return True
 
-    # 2. Text Trung lẫn Latin thường là logo kênh bị OCR đọc (vd: 明月猫meme)
-    # NHƯNG: không lọc nếu Latin chỉ là số/đơn vị nhỏ (vd: "2k", "3G", "100ml")
-    # Chỉ lọc nếu Latin chiếm > 30% tổng ký tự (tức là chắc chắn là logo/brand)
-    if _has_chinese(text) and _has_latin(text):
-        total_chars = len(text.replace(' ', ''))
-        latin_chars = sum(1 for ch in text if 'a' <= ch <= 'z' or 'A' <= ch <= 'Z')
-        latin_ratio = latin_chars / total_chars if total_chars > 0 else 0
-        if latin_ratio > 0.30:  # > 30% Latin → nhiều khả năng là watermark/logo
-            return True
-
+    # Không lọc "chữ Trung lẫn > 30% Latin" nữa: đo trên 15 video thật, luật đó bỏ cả thoại chen tiếng lóng
+    # ("就是这个feel") → để nguyên chữ Trung. Nhãn kiểu "猫meme" giờ được B3 lọc (chuẩn hóa/dịch coi là rác → xóa).
     return False
 
 

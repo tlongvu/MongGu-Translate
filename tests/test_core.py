@@ -103,6 +103,15 @@ def test_segments_keep_ocr_misread_in_same_segment():
     assert len(segs) == 1 and segs[0]['text'] == '我要去修仙！'
 
 
+def test_watermark_filter_keeps_dialogue_with_latin_slang():
+    # Đo trên 15 video thật: luật "Latin > 30%" bỏ cả thoại chen tiếng lóng → để nguyên chữ Trung, không dịch.
+    # Nhãn "meme" giờ đi tiếp: bước chuẩn hóa / dịch của B3 coi là rác → render xóa, không vẽ.
+    assert not op.is_watermark('就是这个feel')
+    assert not op.is_watermark('多惬意，skr!')
+    assert op.is_watermark('@douyin123') and op.is_watermark('抖音号：123')
+    assert not op.is_watermark('原创@哈加密'), "mục SUPPRESS_TEXTS phải được giữ lại để render xóa"
+
+
 def test_segments_typewriter_reveal_stays_one_segment():
     # Chữ hiện dần (typewriter), phụ đề căn giữa: phần đã hiện phải nhập vào câu đầy đủ
     full = '我要成为名动天下的女修'

@@ -71,7 +71,8 @@ HƯỚNG DẪN:
 1. LỌC RÁC:
 - Định dạng Latin/Ký tự lặp vô nghĩa (vd "meme", "neme", "ADIATN").
 - Text quá ngắn (<=1 ký tự) ko có nghĩa (Ngoại trừ: "我", "你", "他"...).
-- Watermark.
+- Watermark, tên kênh, nhãn phiên bản — kể cả khi lẫn chữ Trung (vd "猫meme的小日常", "eme版）", "猫mel", "原创@哈加密").
+- NHƯNG thoại có chen tiếng Anh/tiếng lóng KHÔNG phải rác (vd "就是这个feel", "多惬意，skr!") → giữ nguyên.
 - ĐỐI VỚI TEXT RÁC: Gán value = "" (chuỗi rỗng).
 
 2. NORMALIZE TEXT (Sửa lỗi OCR):
