@@ -63,6 +63,8 @@ for i in range(1, 20):
 GEMINI_API_KEY = GEMINI_API_KEYS[0] if GEMINI_API_KEYS else ""
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
+GEMINI_MODEL = "gemini-2.5-flash"
+DEEPSEEK_MODEL = "deepseek-chat"
 FREEMODEL_API_KEY = os.getenv("FREEMODEL_API_KEY", "")
 FREEMODEL_BASE_URL = os.getenv("FREEMODEL_BASE_URL", "https://api.freemodel.dev/v1")
 FREEMODEL_MODEL = os.getenv("FREEMODEL_MODEL", "gpt-4o-mini")
@@ -260,6 +262,8 @@ OCR_DATA_PATH = os.path.join(_SCRIPT_DIR, "ocr_data.json")
 TRANSLATION_MAP_PATH = os.path.join(_SCRIPT_DIR, "translation_map.json")
 # Cache bản dịch giữa các lần chạy: {cleaned_zh: vi} → video mới chỉ dịch câu mới
 TRANSLATION_CACHE_PATH = os.path.join(_SCRIPT_DIR, "translation_cache.json")
+# Cache lời gọi LLM (llm.ask_json): khóa = hash prompt đầy đủ → an toàn giữa các video
+LLM_CACHE_PATH = os.path.join(_SCRIPT_DIR, "cache", "llm.sqlite")
 
 # ──────────────────────────────────────────────
 # OVERRIDE PER-VIDEO (tùy chọn)

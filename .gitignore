@@ -25,3 +25,4 @@ __pycache__/
 *.log
 debug_*.txt
 .claude/*.lock
+cache/
