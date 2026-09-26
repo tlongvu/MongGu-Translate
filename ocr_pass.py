@@ -365,7 +365,7 @@ def _save_intermediate_checkpoint(video_path, original_video_path, fps, width, h
 def run_ocr_pass(video_path: str, test_mode: bool = False, test_frames: int = 300):
     """
     Pass 1: OCR toàn bộ video, thu thập text + vị trí.
-    Output: ocr_data.json
+    Output: ocr_data.json. Trả về ocr_data, hoặc None nếu không mở được video / bị Ctrl+C.
     """
     print("=" * 55)
     print("  Monggu Translate - Pass 1: OCR Scan")
@@ -497,6 +497,7 @@ def run_ocr_pass(video_path: str, test_mode: bool = False, test_frames: int = 30
     t0 = time.time()
     ocr_count = len(frame_detections)
     submitted = 0   # Số frame đã đẩy vào queue trong phiên này
+    last_ckpt_submitted = 0  # Mốc `submitted` của lần lưu checkpoint gần nhất
     collected = 0   # Số kết quả đã thu thập trong phiên này
     skipped_diff = 0  # Số frame bị bỏ qua vì trùng lặp với frame trước
     interrupted = False
@@ -571,8 +572,10 @@ def run_ocr_pass(video_path: str, test_mode: bool = False, test_frames: int = 30
                       f"| {elapsed:.0f}s | ETA {eta:.0f}s "
                       f"| OCR scans: {ocr_count} | Unique texts: {len(unique_texts)}")
 
-            # Tự động lưu tiến trình định kỳ mỗi 1000 frames quét trong phiên này
-            if submitted > 0 and submitted % 1000 == 0:
+            # Tự động lưu tiến trình sau mỗi 1000 frame thực sự OCR trong phiên này.
+            # (Không dùng `submitted % 1000`: frame bị scene-diff bỏ qua giữ nguyên submitted → lưu lặp file 24MB.)
+            if submitted - last_ckpt_submitted >= 1000:
+                last_ckpt_submitted = submitted
                 collect_results(blocking=False)
                 _save_intermediate_checkpoint(
                     video_path, original_video_path, fps, width, height, total_frames,
@@ -629,6 +632,7 @@ def run_ocr_pass(video_path: str, test_mode: bool = False, test_frames: int = 30
         print(f"  Output        : {OCR_DATA_PATH}")
         print(f"  Bạn có thể chạy lại script để tiếp tục quét từ frame {frame_idx}.")
         print(f"{'=' * 55}")
+        return None  # Chưa xong → báo lỗi để pipeline không chạy tiếp với dữ liệu dở dang
     else:
         print(f"\n{'=' * 55}")
         print(f"  OCR Pass hoàn tất!")
@@ -650,4 +654,5 @@ if __name__ == "__main__":
     parser.add_argument("--test", action="store_true", default=TEST_MODE, help="Test mode (giới hạn frames)")
     args = parser.parse_args()
 
-    run_ocr_pass(args.input, test_mode=args.test, test_frames=TEST_FRAMES)
+    result = run_ocr_pass(args.input, test_mode=args.test, test_frames=TEST_FRAMES)
+    sys.exit(0 if result else 1)
