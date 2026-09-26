@@ -69,7 +69,7 @@ cache/llm.sqlite           cache lời gọi LLM
 | 0. Chuẩn hóa | Chữ OCR thô | Chữ sạch, hoặc `""` nếu là rác | ~21 |
 | 1. Hồ sơ truyện | **Toàn bộ** lời thoại theo thứ tự, kèm hồ sơ series nếu có | `story.json` | 1 |
 | 2. Người nói | Cửa sổ 200 câu, kèm hồ sơ và nhãn tên đang hiện trên màn hình | `noi`, `nghe`, `chac` từng câu | ~15 |
-| 3. Dịch | Cửa sổ 120 câu gắn `(A→B)`, kèm tóm tắt, **chỉ các cặp xưng hô có trong cửa sổ**, và 15 câu đã dịch ngay trước | `vi` theo `id` | ~25 |
+| 3. Dịch | Cửa sổ khoảng 150 segment (theo vị trí) gắn `(A→B)`, kèm tóm tắt, **chỉ các cặp xưng hô có trong cửa sổ**, và ngữ cảnh ngay trước (chỉ tiếng Trung + người nói) | `vi` theo `id` | ~30 |
 | 4. Rà soát | Câu đã dịch, kèm người nói và bảng xưng hô | Chỉ các câu cần sửa; chỉ nhận `id` thuộc cửa sổ | ~20 |
 
 - **Mỗi lời gọi sở hữu riêng các câu của nó.** Câu ngữ cảnh gối đầu chỉ để đọc, không được gán hay dịch lại.
@@ -248,13 +248,24 @@ Không chạy `translate_pass.py` thật (sẽ gọi API). Trường hợp thi�
    - **Prompt gồm:**
      - tóm tắt, thể loại;
      - **chỉ** các nhân vật, cặp xưng hô và tên riêng xuất hiện trong cửa sổ.
-   - **Dòng:** `[id] (A→B) 中文` hoặc `[id] (Nhãn) 中文`.
+   - **Dòng:** `[id] (A→B) 中文`. Nhãn tên được dịch riêng qua `translate_labels`.
    - **Cặp xưng hô:** dùng `A>B`; không có thì dùng `A>*`.
    - **Thiếu câu:** hỏi lại một lần; vẫn thiếu thì `LLMError` (exit 1).
 6. **`qa_lines`** — bước 4, cửa sổ 150:
    - soát sai xưng hô so với bảng, nhầm chủ ngữ, sai ý so với tóm tắt;
    - chỉ nhận `id` thuộc cửa sổ.
 7. **Ghi file:** ghi `lines.json`, và `story.json` nếu có thay đổi (ghi atomic). Thôi ghi `translation_map.json`.
+
+**Bổ sung sau review B3:**
+- **Cửa sổ cắt theo vị trí** trên toàn bộ `lines`: đổi loại một dòng chỉ ảnh hưởng tối đa 2 cửa sổ.
+- **Series:** mỗi tập lập hồ sơ đúng 1 lần, ghi dấu trong `story["tap"][<tên tập>]`, kèm tóm tắt riêng của tập đó; chạy lại không gọi lại, và không thêm lại mục người dùng đã xóa.
+- **Kiểm tra hồ sơ từ model:** mục sai định dạng thì bỏ và báo WARN; khóa `a -> b` được chuẩn hóa thành `a>b`.
+- **Người nói:**
+  - dòng trỏ tới id không còn trong hồ sơ → xác định lại;
+  - dòng model bỏ sót → để trống, lần chạy sau hỏi lại.
+- **Giữ sửa tay:** đối chiếu theo chữ OCR gốc (`ocr`), không theo kết quả chuẩn hóa.
+- **Câu bị OCR tách đôi** (cùng chữ, cách nhau ≤ 1 giây) → xử lý 1 lần rồi chép kết quả sang (`lap_lai`).
+- **Render:** kiểm tra `lines.json` khớp `ocr_data` (số dòng + khung thời gian); lệch thì dừng.
 
 **Xóa:** phase 1–4 cũ (`build_ordered_transcript`, hồ sơ nhân vật 90 dòng, `translate_script`, `qa_consistency_pass`, mượn bản dịch biến thể), prompt `TRANSLATION_*` trong `config.py`, glossary theo job.
 

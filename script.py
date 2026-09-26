@@ -54,6 +54,22 @@ from jobs import open_job, JobError
 # UTILITY FUNCTIONS
 # ──────────────────────────────────────────────
 
+def lines_mismatch(lines: list, text_segments: list) -> bool:
+    """lines.json phải được dịch từ ĐÚNG ocr_data hiện tại: đủ dòng, mỗi dòng cùng khung thời gian với segment
+    cùng id. OCR chạy lại sau khi dịch → số thứ tự segment xê dịch → không chặn thì cả video lệch phụ đề."""
+    if len(lines) != len(text_segments):
+        return True
+    for l in lines:
+        i = l.get("id") if isinstance(l, dict) else None
+        if not isinstance(i, int) or not 0 <= i < len(text_segments):
+            return True
+        seg = text_segments[i]
+        if (l.get("start"), l.get("end")) != (int(seg.get("start_frame", 0)),
+                                              int(seg.get("end_frame", seg.get("start_frame", 0)))):
+            return True
+    return False
+
+
 def video_mismatch(ocr_data: dict, width: int, height: int, fps: float, n_frames: int):
     """So video sắp render với ocr_data. Trả về câu mô tả chỗ lệch, hoặc None nếu khớp.
     Video DÀI hơn dữ liệu vẫn cho qua (dữ liệu OCR --test chỉ phủ đoạn đầu)."""
@@ -1152,19 +1168,27 @@ if __name__ == "__main__":
         print("  [ERROR] OCR của video này chưa chạy xong (bị ngắt?) — chạy tiếp OCR rồi dịch lại.")
         sys.exit(1)
 
-    with open(job.lines, "r", encoding="utf-8") as f:
-        lines = json.load(f)
+    try:
+        with open(job.lines, "r", encoding="utf-8") as f:
+            lines = json.load(f)
+    except ValueError as e:
+        print(f"  [ERROR] {job.lines} sai cú pháp JSON ({e}) — sửa lại file rồi render lại.")
+        sys.exit(1)
 
     frame_detections = ocr_data["frame_detections"]
     text_segments = ocr_data.get("text_segments", [])  # Có thể thiếu nếu ocr_data cũ
 
     # Bản dịch theo TỪNG LẦN XUẤT HIỆN: id segment → vi_sua (sửa tay) hoặc vi.
     # translation_map (chữ OCR thô → bản dịch lần xuất hiện đầu) chỉ dùng cho chữ thô không thuộc segment nào.
+    if lines_mismatch(lines, text_segments):
+        print(f"  [ERROR] lines.json không khớp ocr_data.json (OCR đã chạy lại sau khi dịch?) — "
+              f"chạy lại: python translate_pass.py --input \"{args.input}\"")
+        sys.exit(1)
     for i, seg in enumerate(text_segments):
         seg["id"] = i
     vi_for_seg, translation_map = {}, {}
     for l in sorted(lines, key=lambda l: l["start"]):
-        vi = l.get("vi_sua") or l.get("vi") or ""
+        vi = l["vi_sua"] if isinstance(l.get("vi_sua"), str) else (l.get("vi") or "")  # vi_sua "" = cố ý bỏ phụ đề
         vi_for_seg[l["id"]] = vi
         if l["id"] < len(text_segments):
             translation_map.setdefault(text_segments[l["id"]]["text"], vi)

@@ -207,7 +207,7 @@ def test_long_lived_texts_are_label_candidates():
 
 def test_labels_mark_onscreen_characters():
     lines = [_line(0, '孙晴', 0, 100), _line(1, '你来了', 10, 20), _line(2, '走', 200, 210)]
-    tp.mark_labels_and_onscreen(lines, {"nhan": {"孙晴": "sun_qing"}})
+    tp.mark_labels_and_onscreen(lines, {"nhan_vat": {"sun_qing": {"ten": "Tôn Tình"}}, "nhan": {"孙晴": "sun_qing"}})
     assert lines[0]["loai"] == "nhan"
     assert lines[1]["tren_man_hinh"] == ["sun_qing"] and lines[2]["tren_man_hinh"] == []
 
@@ -217,7 +217,8 @@ def test_merge_story_only_adds():
            "xung_ho": {"yiyi>tieu_thu": {"xung": "nô tỳ", "goi": "tiểu thư"}}}
     new = {"tom_tat": "mới", "nhan_vat": {"yiyi": {"ten": "Y Y"}, "bach_lang": {"ten": "Bạch Lang"}},
            "xung_ho": {"yiyi>tieu_thu": {"xung": "tôi", "goi": "cô"}, "bach_lang>*": {"xung": "ta", "goi": "các ngươi"}}}
-    m = tp.merge_story(old, new)
+    m, dropped = tp.merge_story(old, new)
+    assert dropped == 0
     assert m["tom_tat"] == "cũ" and m["nhan_vat"]["yiyi"]["ten"] == "Y Y (sửa tay)"
     assert m["xung_ho"]["yiyi>tieu_thu"]["xung"] == "nô tỳ", "Cặp xưng hô đã có không bị ghi đè"
     assert "bach_lang" in m["nhan_vat"] and "bach_lang>*" in m["xung_ho"], "Cái mới được bổ sung"
@@ -249,7 +250,7 @@ def test_attribute_speakers_fills_only_missing():
     assert (lines[0]["noi"], lines[0]["nghe"]) == ("b", "a"), "Dòng đã có không bị ghi đè"
     assert (lines[1]["noi"], lines[1]["nghe"], lines[1]["chac"]) == ("a", "b", 0.9)
     assert lines[2]["noi"] == "?" and lines[2]["chac"] == 0.0, "id nhân vật lạ → ?"
-    assert lines[3]["noi"] == "?" and lines[3]["chac"] == 0.0, "Bỏ sót sau khi hỏi lại → ? (không dừng)"
+    assert "noi" not in lines[3], "Bỏ sót sau khi hỏi lại → để trống (không dừng, lần chạy sau hỏi lại)"
 
 
 def test_translate_lines_each_line_once():
@@ -306,6 +307,118 @@ def test_segment_index_uses_per_occurrence_translation():
                                  vi_for_seg={0: 'Bản tiểu thư biết rồi', 1: 'Nô tỳ biết rồi'})
     assert idx[5][0]['vi_text'] == 'Bản tiểu thư biết rồi'
     assert idx[55][0]['vi_text'] == 'Nô tỳ biết rồi'
+
+
+def test_lines_mismatch_detects_ocr_rerun():
+    segs = [{'text': 'A', 'start_frame': 0, 'end_frame': 5}, {'text': 'B', 'start_frame': 10, 'end_frame': 15}]
+    lines = [{"id": 0, "start": 0, "end": 5}, {"id": 1, "start": 10, "end": 15}]
+    assert not s.lines_mismatch(lines, segs)
+    assert s.lines_mismatch(lines[:1], segs), "Thiếu dòng"
+    assert s.lines_mismatch([lines[0], {"id": 1, "start": 11, "end": 15}], segs), "Segment đổi (OCR chạy lại)"
+
+
+def test_build_lines_matches_edits_on_raw_ocr_not_normalized_text():
+    segs = [{'text': '我知道了。', 'start_frame': 0, 'end_frame': 5}]
+    old = [{"id": 0, "ocr": "我知道了。", "zh": "我知道了。", "vi_sua": "Nô tỳ biết rồi"}]
+    lines = tp.build_lines(segs, {'我知道了。': '我知道了'}, old)       # chuẩn hóa ra khác lần trước
+    assert lines[0]["vi_sua"] == "Nô tỳ biết rồi", "Sửa tay không được mất chỉ vì chuẩn hóa đổi"
+
+
+def test_merge_story_drops_malformed_model_output():
+    new = {"nhan_vat": {"a": {"ten": "A"}, "b": ["sai kiểu"]},
+           "xung_ho": {"a -> b": {"xung": "ta", "goi": "ngươi"}, "a>*": "sai kiểu", "khong_co_mui_ten": {}},
+           "ten_rieng": {"天元宗": None}, "nhan": {"孙晴": None, "萧衡": "khong_ton_tai", "我": "a"}}
+    m, dropped = tp.merge_story({}, new)
+    assert list(m["nhan_vat"]) == ["a"] and m["xung_ho"] == {"a>b": {"xung": "ta", "goi": "ngươi"}}
+    assert m["nhan"] == {"我": "a"} and m["ten_rieng"] == {}
+    assert dropped == 6, dropped   # b (nhân vật) + a>*, khong_co_mui_ten (xưng hô) + 天元宗 + 孙晴, 萧衡 (nhãn)
+
+
+def test_repeated_line_translated_once_and_copied():
+    lines = [_line(0, '我要去修仙！', 0, 20), _line(1, '我要去修仙！', 30, 50), _line(2, '走吧', 60, 70)]
+    tp.mark_labels_and_onscreen(lines, {})
+    assert lines[1].get("lap_lai") == 0 and "lap_lai" not in lines[2]
+
+    def fake(system, user, temperature=0.1, **kw):
+        todo = user.split("CẦN DỊCH:\n", 1)[1]
+        return {x[1:x.index("]")]: "VI" + x[1:x.index("]")] for x in todo.splitlines() if x.startswith("[")}
+    _with_fake_llm(fake, tp.translate_lines, lines, {})
+    tp.copy_repeats(lines)
+    assert [l["vi"] for l in lines] == ["VI0", "VI0", "VI2"], "Câu bị OCR tách đôi phải cùng một bản dịch"
+
+
+def test_attribute_speakers_reasks_lines_with_removed_characters():
+    story = {"nhan_vat": {"tt": {"ten": "Tôn Tình"}}}                      # sun_qing đã đổi tên thành tt
+    lines = [_line(1, '你好', 0, 5, noi='sun_qing', nghe='*', chac=1.0)]
+    _with_fake_llm(lambda s, u, temperature=0.1, **kw: {"1": {"noi": "tt", "nghe": "*", "chac": 0.9}},
+                   tp.attribute_speakers, lines, story)
+    assert lines[0]["noi"] == "tt", "Người nói trỏ tới id không còn trong hồ sơ phải được xác định lại"
+
+
+def test_qa_lines_only_accepts_window_ids_and_keeps_on_error():
+    lines = [_line(1, '你好', 0, 5, noi='a', nghe='b', vi='Chào'), _line(2, '走吧', 6, 9, noi='b', nghe='a', vi='Đi')]
+    fixed = _with_fake_llm(lambda s, u, temperature=0.1, **kw: {"1": "Xin chào", "999": "ngoài cửa sổ"},
+                           tp.qa_lines, lines, {})
+    assert fixed == 1 and [l["vi"] for l in lines] == ["Xin chào", "Đi"]
+
+    def broken(*a, **kw):
+        raise tp.LLMError("hỏng")
+    assert _with_fake_llm(broken, tp.qa_lines, lines, {}) == 0 and lines[0]["vi"] == "Xin chào"
+
+
+def test_run_translation_rerun_is_free_and_keeps_edits():
+    # Chạy thật run_translation (llm.ask_json thật + cache thật trong thư mục tạm, provider GIẢ):
+    # chạy lại không đổi gì → 0 lời gọi LLM, cả video lẻ lẫn tập của series; vi_sua được giữ.
+    import re
+    import llm
+    d = tempfile.mkdtemp()
+    saved = (jobs.JOBS_DIR, jobs.SERIES_DIR, llm.LLM_CACHE_PATH, llm._db, llm._default_providers, tp.load_ocr_data)
+    calls = []
+
+    def ids(block):
+        return re.findall(r'^\[(\d+)\]', block, re.M)
+
+    def provider(system, user, temperature):
+        calls.append(system[:15])
+        if system == tp.NORMALIZATION_SYSTEM_PROMPT:
+            return json.dumps({t: t for t in json.loads(user)})
+        if system == tp.STORY_SYS:
+            return json.dumps({"tom_tat": "t", "tom_tat_tap": "tập", "nhan_vat": {"a": {"ten": "A"}, "b": {"ten": "B"}},
+                               "xung_ho": {"a>b": {"xung": "ta", "goi": "ngươi"}}})
+        if system.startswith(tp.SPEAKER_SYS):
+            return json.dumps({i: {"noi": "a", "nghe": "b", "chac": 0.9}
+                               for i in ids(user.split("ĐOẠN CẦN XÁC ĐỊNH:\n", 1)[1])})
+        if system.startswith(tp.TRANSLATE_SYS):
+            return json.dumps({i: f"VI{i}" for i in ids(user.split("CẦN DỊCH:\n", 1)[1])})
+        return "{}"                                                        # QA: không sửa gì
+    try:
+        jobs.JOBS_DIR, jobs.SERIES_DIR = os.path.join(d, "jobs"), os.path.join(d, "series")
+        if llm._db is not None:
+            llm._db.close()
+        llm._db, llm.LLM_CACHE_PATH = None, os.path.join(d, "cache", "llm.sqlite")
+        llm._default_providers = lambda: [("fake", provider)]
+        segs = [{"text": t, "start_frame": i * 30, "end_frame": i * 30 + 20} for i, t in enumerate(["你好", "走吧", "什么"])]
+        tp.load_ocr_data = lambda path: {"unique_texts": ["你好", "走吧", "什么"], "text_segments": segs,
+                                         "fps": 25.0, "complete": True}
+        for series in (None, "bo"):
+            v = os.path.join(d, f"tap_{series}.mp4")
+            with open(v, "wb") as f:
+                f.write(os.urandom(16))
+            job = jobs.open_job(v, series=series, create=True)
+            calls.clear()
+            assert tp.run_translation(v) is True and calls, "Lần đầu phải gọi LLM"
+            lines = json.load(open(job.lines, encoding="utf-8"))
+            lines[0]["vi_sua"] = "Sửa tay"
+            json.dump(lines, open(job.lines, "w", encoding="utf-8"), ensure_ascii=False)
+            calls.clear()
+            assert tp.run_translation(v) is True
+            assert calls == [], f"Chạy lại không đổi gì phải tốn 0 lời gọi (series={series}): {calls}"
+            assert json.load(open(job.lines, encoding="utf-8"))[0]["vi_sua"] == "Sửa tay"
+    finally:
+        if llm._db is not None:
+            llm._db.close()
+        (jobs.JOBS_DIR, jobs.SERIES_DIR, llm.LLM_CACHE_PATH, llm._db, llm._default_providers, tp.load_ocr_data) = saved
+        shutil.rmtree(d, ignore_errors=True)
 
 
 # ── Ghi JSON an toàn (utils) ──
