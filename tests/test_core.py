@@ -433,6 +433,95 @@ def test_run_translation_rerun_is_free_and_keeps_edits():
 
 # ── Ghi JSON an toàn (utils) ──
 
+def _run_ocr_with_fakes(fail_ocr_at=None, fail_read_at=None):
+    """Chạy op.run_ocr_pass trên video tổng hợp (tests/wm_synth) với PaddleOCR giả (không cần paddle):
+    OCR giả trả 1 dòng chữ mỗi frame; fail_ocr_at: frame OCR ném lỗi (như hết RAM); fail_read_at: từ frame này
+    cap.read() thất bại giữa video. → (kết quả run_ocr_pass, ocr_data đã ghi, thư mục tạm để dọn)."""
+    import types
+    import cv2
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import wm_synth
+    d = tempfile.mkdtemp()
+    video = os.path.join(d, "clip.mp4")
+    wm_synth.make_video(video)
+    fake_paddle = types.ModuleType("paddle")
+    fake_paddle.device = types.SimpleNamespace(is_compiled_with_cuda=lambda: False)
+    fake_paddleocr = types.ModuleType("paddleocr")
+    fake_paddleocr.PaddleOCR = lambda *a, **k: object()
+    real_cap, real_ocr_frame = cv2.VideoCapture, op.ocr_frame
+    saved = {k: sys.modules.get(k) for k in ("paddle", "paddleocr")}
+
+    class _Cap:
+        def __init__(self, path):
+            self._c, self._n = real_cap(path), 0
+
+        def read(self):
+            if fail_read_at is not None and self._n >= fail_read_at:
+                return False, None
+            self._n += 1
+            return self._c.read()
+
+        def __getattr__(self, name):
+            return getattr(self._c, name)
+
+    def fake_ocr_frame(engine, frame, height, width, crop, resize):
+        n = fake_ocr_frame.calls
+        fake_ocr_frame.calls += 1
+        if fail_ocr_at is not None and n == fail_ocr_at:
+            raise RuntimeError("could not create a primitive")
+        return [{"text": "你好世界", "box": [[10, 10], [90, 10], [90, 40], [10, 40]], "confidence": 0.99}]
+    fake_ocr_frame.calls = 0
+    orig_dirs = (jobs.JOBS_DIR, jobs.SERIES_DIR)
+    try:
+        sys.modules["paddle"], sys.modules["paddleocr"] = fake_paddle, fake_paddleocr
+        cv2.VideoCapture, op.ocr_frame = _Cap, fake_ocr_frame
+        jobs.JOBS_DIR, jobs.SERIES_DIR = os.path.join(d, "jobs"), os.path.join(d, "series")
+        result = op.run_ocr_pass(video, test_mode=False, test_frames=0)
+        with open(jobs.open_job(video).ocr_data, encoding="utf-8") as f:
+            data = json.load(f)
+    finally:
+        cv2.VideoCapture, op.ocr_frame = real_cap, real_ocr_frame
+        jobs.JOBS_DIR, jobs.SERIES_DIR = orig_dirs
+        for k, v in saved.items():
+            if v is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = v
+    return result, data, d
+
+
+def test_ocr_error_mid_video_is_not_recorded_as_no_text():
+    # Video Douyin 36 phút: OCR lỗi vì hết RAM ở vài frame bị ghi là "không có chữ" rồi vẫn báo xong → mất chữ im lặng
+    result, data, d = _run_ocr_with_fakes(fail_ocr_at=60)
+    try:
+        assert result is None, "OCR lỗi giữa chừng phải báo thất bại (mã 1)"
+        assert data["complete"] is False, "dữ liệu dở dang phải complete=False để chạy tiếp / dịch từ chối"
+        # lần gọi OCR thứ 60 lỗi (khoảng frame 180 vì frame trùng được bỏ qua): chỉ giữ 60 lần OCR trước đó,
+        # bỏ cả kết quả các frame sau đã nằm sẵn trong hàng đợi — chạy lại phải quét lại từ frame lỗi
+        assert 0 < len(data["frame_detections"]) <= 60, len(data["frame_detections"])
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_ocr_read_failure_mid_video_is_not_end_of_video():
+    # Hết RAM làm cap.read() thất bại ở frame ~29.600/54.606 → vòng đọc tưởng hết video → complete=True, mất 46% cuối
+    result, data, d = _run_ocr_with_fakes(fail_read_at=100)
+    try:
+        assert result is None and data["complete"] is False, "đọc hỏng giữa video không phải hết video"
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_ocr_fake_run_completes_normally():
+    # Đối chứng: không lỗi thì OCR giả chạy hết video, complete=True
+    result, data, d = _run_ocr_with_fakes()
+    try:
+        assert result is not None and data["complete"] is True
+        assert max(int(k) for k in data["frame_detections"]) >= 200
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
 def test_write_json_atomic_keeps_old_file_on_error():
     tmpdir = tempfile.mkdtemp()
     path = os.path.join(tmpdir, "data.json")

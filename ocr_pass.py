@@ -477,9 +477,9 @@ def run_ocr_pass(video_path: str, test_mode: bool = False, test_frames: int = 30
             fidx, frm = item
             try:
                 dets = ocr_frame(engine, frm, height, width, CROP_TOP_RATIO, OCR_RESIZE_FACTOR)
-            except Exception as e:
-                print(f"  [WARN] Worker {worker_id} lỗi frame {fidx}: {e}")
-                dets = []
+            except Exception as e:   # vd hết RAM ("could not create a primitive"): KHÔNG được coi là "không có chữ"
+                print(f"  [ERROR] Worker {worker_id} lỗi frame {fidx}: {e}")
+                dets = None
             result_q.put((fidx, dets))
             task_q.task_done()
 
@@ -500,6 +500,8 @@ def run_ocr_pass(video_path: str, test_mode: bool = False, test_frames: int = 30
     collected = 0   # Số kết quả đã thu thập trong phiên này
     skipped_diff = 0  # Số frame bị bỏ qua vì trùng lặp với frame trước
     interrupted = False
+    ocr_failed = []    # frame OCR lỗi (vd hết RAM)
+    read_failed = None  # frame đọc hỏng giữa video (không phải hết video)
 
     # ── Scene-diff state: bỏ qua các frame gần như giống hệt frame OCR gần nhất ──
     # Giới hạn skip tối đa để keyframe vẫn đủ dày, segment không bị đứt đoạn.
@@ -518,6 +520,9 @@ def run_ocr_pass(video_path: str, test_mode: bool = False, test_frames: int = 30
                 timeout = None if blocking and collected < submitted else 0
                 fidx, dets = result_q.get(block=(timeout is None), timeout=timeout if timeout else 0.001)
                 collected += 1
+                if dets is None:
+                    ocr_failed.append(fidx)
+                    continue
                 if dets:
                     frame_detections[str(fidx)] = dets
                     ocr_count += 1
@@ -534,6 +539,10 @@ def run_ocr_pass(video_path: str, test_mode: bool = False, test_frames: int = 30
         while frame_idx < total_frames:
             ret, frame = cap.read()
             if not ret:
+                # Còn > ~1 s mà đọc hỏng = lỗi đọc (vd hết RAM: OpenCV "Insufficient memory"), không phải hết video.
+                # Trước đây coi là hết video → complete=True, mất im lặng cả phần sau (Douyin 36 phút: dừng ở 54%).
+                if total_frames - frame_idx > max(int(fps), 25):
+                    read_failed = frame_idx
                 break
 
             if frame_idx % ocr_interval_frames == 0:
@@ -559,6 +568,8 @@ def run_ocr_pass(video_path: str, test_mode: bool = False, test_frames: int = 30
 
             # Thu thập kết quả sẵn có (non-blocking) để giải phóng result_q
             collect_results(blocking=False)
+            if ocr_failed:   # OCR lỗi: dừng ngay, lưu phần chắc chắn đúng để chạy lại tiếp (tiến trình mới có RAM sạch)
+                break
 
             frame_idx += 1
 
@@ -595,6 +606,16 @@ def run_ocr_pass(video_path: str, test_mode: bool = False, test_frames: int = 30
     for w in workers:
         w.join()
     collect_results(blocking=True)
+
+    failed_at = min(ocr_failed + ([read_failed] if read_failed is not None else []), default=None)
+    if failed_at is not None:
+        # Bỏ kết quả từ frame lỗi trở đi: chạy lại tiếp từ sau frame có chữ cuối cùng → phải quét lại cả frame lỗi
+        for k in [k for k in frame_detections if int(k) >= failed_at]:
+            del frame_detections[k]
+        print(f"\n  [ERROR] OCR dừng ở frame {failed_at}/{total_frames}: "
+              f"{'OCR lỗi' if ocr_failed else 'không đọc được frame'} (thường do thiếu RAM — đóng bớt ứng dụng).")
+        interrupted = True
+        frame_idx = failed_at
 
     elapsed = time.time() - t0
 
