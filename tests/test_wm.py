@@ -42,9 +42,40 @@ def test_find_moving_wm_picks_only_the_moving_watermark():
         fd[f].append(_det("原创@哈加", 210 + f * 0.3, 150 + f * 0.2, 160, 46))
     wm = wm_track.find_moving_wm(_ocr(fd))
     assert wm and wm["text"] == "原创@哈加密", wm and wm["text"]
-    assert len(wm["reads"]) == 150 and wm["reads"] == sorted(wm["reads"])
+    assert len(wm["reads"]) == 150
     no_wm = {f: [d for d in ds if not d["text"].startswith("原创@")] for f, ds in fd.items()}
     assert wm_track.find_moving_wm(_ocr(no_wm)) is None, "nhãn / watermark tĩnh / thoại không được nhận là watermark chạy"
+
+
+def test_find_moving_wm_each_threshold_excludes_on_its_own():
+    """Mỗi ngưỡng tự loại được ứng viên chỉ trượt đúng ngưỡng đó (mọi điều kiện khác đều đạt)."""
+    def moving(text, n_reads, width=lambda f: 190):
+        fd = defaultdict(list)
+        for f in np.linspace(0, 2999, n_reads).astype(int):
+            fd[int(f)].append(_det(text, 200 + f * 0.3, 150 + f * 0.2, width(f), 46))
+        return _ocr(fd)
+    assert wm_track.find_moving_wm(moving("原创@哈加密", 10))["text"] == "原创@哈加密", "vừa đủ 10 lần đọc"
+    assert wm_track.find_moving_wm(moving("原创@哈加密", 9)) is None, "< 10 lần đọc"
+    assert wm_track.find_moving_wm(moving("哈加密", 150)) is None, "chữ < 4 ký tự"
+    assert wm_track.find_moving_wm(moving("原创@哈加密", 150, width=lambda f: 100 + (f % 7) * 40)) is None, \
+        "cỡ box dao động > 15%"
+    early = defaultdict(list)
+    for f in range(0, 500, 3):
+        early[f].append(_det("原创@哈加密", 200 + f * 2, 150 + f, 190, 46))
+    assert wm_track.find_moving_wm(_ocr(early)) is None, "chỉ có mặt < 40% số đoạn 10 s"
+    static = defaultdict(list)
+    for f in range(0, 3000, 20):
+        static[f].append(_det("原创@哈加密", 700, 500, 190, 46))
+    assert wm_track.find_moving_wm(_ocr(static)) is None, "đứng yên (tản < 5% đường chéo)"
+
+
+def test_find_moving_wm_reads_are_frame_ordered_tuples():
+    fd = {}
+    for f in reversed(range(0, 3000, 20)):      # chèn ngược thứ tự thời gian
+        fd[f] = [_det("原创@哈加密", 200 + f // 3, 150 + f // 6, 190, 46)]
+    reads = wm_track.find_moving_wm(_ocr(fd))["reads"]
+    assert [r[0] for r in reads] == list(range(0, 3000, 20)), "reads phải sắp theo frame"
+    assert reads[1] == (20, 206.0, 153.0, 190.0, 46.0, 0.9), "tuple (frame, cx, cy, w, h, conf)"
 
 
 if __name__ == "__main__":
