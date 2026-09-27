@@ -194,3 +194,14 @@ Dữ liệu thật:
 - Còn hở: vật khớp nhầm xuất hiện lúc OCR không đọc được watermark lần nào mà vẫn nối được vào quỹ đạo thì vẫn có thể được chọn.
 
 **Giới hạn còn lại.** Trong khoảng hụt rất dài mà watermark mờ tới mức khớp mẫu không phân biệt được với nhiễu, vị trí chỉ là đoán. Ví dụ `newvideo` frame 606–1019 (16,5 s, chỉ 4 frame có bằng chứng): ở frame 835 chữ còn thấy lờ mờ, nhưng điểm khớp tại chỗ thật chỉ 0,25, là đỉnh thứ 5, thấp hơn nhiễu 0,29–0,34. Ở những đoạn đó có thể còn thấy watermark mờ, kèm vết nhòe gần đó. Muốn hơn nữa phải đổi tín hiệu dò (ví dụ tách lớp alpha nhiều frame) — việc riêng, chỉ làm khi user thấy cần.
+
+## 11. Kiểm thật lần 2: video Douyin 36 phút (kênh 粥咪咪, 960×720)
+
+Lộ ra 5 lỗi, đã sửa:
+1. Watermark chỉ 3 ký tự → ngưỡng độ dài 4 → 3 (mục 4.1).
+2. Watermark hay nằm sát / lòi ra mép khung. Mẫu dựng bỏ mất các lần đọc sát mép, khớp mẫu không với tới chỗ lòi ra → đệm 0 quanh gradient khi dựng mẫu và khi dò, cho khung mẫu lòi ra ngoài khung hình. Đoạn 0–60 s: lệch tối đa 121 px → 8,1 px.
+3. OCR sập vì tràn stack luồng phụ khi Paddle nhận dạng → stack luồng OCR 64 MB.
+4. Thiếu RAM làm OCR dừng ở 54% mà vẫn ghi `complete` → lỗi giữa chừng giờ lưu tới frame lỗi (`scanned_until`) và chạy tiếp. Lỗi này có từ trước: các lần chạy video dài trước đây có thể đã bị cắt cụt im lặng.
+5. PaddleOCR (paddle 2.6 CPU) rò ~4,4 MB mỗi frame OCR, không trả lại trong tiến trình → OCR theo đợt `OCR_CHUNK_SCANS` = 600 frame, mỗi đợt một tiến trình con. Đỉnh mỗi đợt 3–4,6 GB, máy luôn còn ≥ 2 GB trống.
+
+Kết quả: bám 54.501/54.606 frame (85% có bằng chứng), 626 s. So với 203 lần OCR đọc đủ chữ ở độ phân giải gốc (0:00–1:00, 15:00–15:30, 33:20–33:50): median 3,2 px, max 9,2 px. `newvideo` chạy lại sau các sửa: 19 mốc, median 3,6 px, max 7,8 px, khoảng bám 147–3174 — không đổi.
