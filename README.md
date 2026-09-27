@@ -1,6 +1,6 @@
 # Monggu Translate
 
-Dịch phụ đề video Trung Quốc sang tiếng Việt: **OCR → dịch theo cốt truyện, đúng nhân vật → render lại video**.
+Dịch phụ đề video Trung Quốc sang tiếng Việt: **OCR → xóa watermark chạy → dịch theo cốt truyện, đúng nhân vật → render lại video**.
 Thư mục `story_engine/` làm reel gốc: viết kịch bản tay, hoặc `--idea "…"` để LLM viết kịch bản (dùng chung lõi `llm.py` và cache). Xem `story_engine/README.md`.
 
 ## Cài đặt
@@ -19,11 +19,12 @@ python pipeline.py --input D:\videos\daosiep4.mp4 --series daosi   # tập của
 python pipeline.py --input video.mp4 --test                        # thử nhanh ~20s đầu (không lưu hồ sơ truyện)
 python pipeline.py --input video.mp4 --skip-existing               # bỏ qua bước đã xong
 python pipeline.py --input video.mp4 --only render                 # chỉ render lại
+python pipeline.py --input video.mp4 --only wm                     # chỉ dò lại watermark chạy
 ```
 
 **Video ra:** `jobs/<tên-video>/<tên-video>_vi.mp4`.
 
-Bước nào lỗi thì pipeline dừng ngay với thông báo rõ ràng, không âm thầm xuất video sai.
+Bước nào lỗi thì pipeline dừng ngay với thông báo rõ ràng, không âm thầm xuất video sai. Riêng bước dò watermark chạy lỗi thì chỉ cảnh báo, vẫn dịch và render.
 
 ## Dữ liệu của mỗi video
 
@@ -31,6 +32,8 @@ Bước nào lỗi thì pipeline dừng ngay với thông báo rõ ràng, không
 |---|---|
 | `jobs/<tên>/job.json` | Video gốc, dấu vân tay, series. Chặn trường hợp hai video trùng tên dùng chung dữ liệu. |
 | `jobs/<tên>/ocr_data.json` | Kết quả OCR. `complete: false` nghĩa là OCR bị ngắt; chạy lại sẽ làm tiếp. |
+| `jobs/<tên>/wm_track.json` | Watermark chạy: chữ, vị trí ở từng frame. `found: false` kèm lý do nếu không có / bỏ qua. |
+| `jobs/<tên>/wm_mask.png`, `wm_preview.png` | Mask nét chữ dùng để xóa; ảnh xem nhanh vị trí bám. |
 | `jobs/<tên>/lines.json` | Từng lần xuất hiện của từng câu: tiếng Trung, người nói (`noi`), người nghe (`nghe`), bản dịch (`vi`). |
 | `jobs/<tên>/story.json` | Hồ sơ truyện của video lẻ. |
 | `series/<bộ>/story.json` | Hồ sơ truyện dùng chung cho mọi tập của một bộ. |
@@ -60,6 +63,23 @@ Bước nào lỗi thì pipeline dừng ngay với thông báo rõ ràng, không
 
 Mọi chỗ sửa tay đều được giữ khi chạy lại. Nhờ cache, chỉ những đoạn có liên quan mới phải gọi lại LLM.
 
+## Xóa watermark chạy
+
+Watermark chạy là chữ ID nhỏ, mờ, trôi khắp khung hình (vd "原创@哈加密"). OCR chỉ đọc được nó ở vài % số frame, nên trước đây video ra bị lúc xóa lúc không. Bước `wm_track.py` (pipeline tự chạy sau OCR):
+
+1. tự nhận chữ watermark từ kết quả OCR: chữ có mặt suốt video, vị trí thay đổi dần, cỡ không đổi (không cần khai báo chữ);
+2. dựng mẫu nét chữ từ những lần OCR đọc đủ;
+3. dò mẫu trên mọi frame, nối các lần dò chắc chắn thành quỹ đạo, lấp đoạn mờ bằng nội suy;
+4. render xóa theo **hình nét chữ** ở mọi frame.
+
+- **Kiểm:** log `[WM] Thấy watermark chạy '…' — bám N frame (…% có bằng chứng)`, và ảnh `jobs/<tên>/wm_preview.png` (khung xanh = dò thấy, vàng = nội suy) phải nằm đúng lên chữ.
+- **Chạy lại riêng bước này:** `--only wm`, rồi `--only render`.
+- **Tắt cho một video:** tạo file JSON `{"WM_TRACK": false}`, đặt biến môi trường `MONGGU_CONFIG` trỏ tới file đó, rồi chạy `--only wm` và `--only render`.
+- **Giới hạn:**
+  - mỗi video 1 watermark chạy;
+  - watermark tĩnh vẫn dùng `SUPPRESS_TEXTS`;
+  - nền nhiều vân có thể còn vệt nhòe nhẹ của inpaint.
+
 ## Cache
 
 - Xóa `cache/llm.sqlite` để dịch lại từ đầu.
@@ -73,7 +93,7 @@ Mọi chỗ sửa tay đều được giữ khi chạy lại. Nhờ cache, chỉ
 
 | File | Vai trò |
 |---|---|
-| `pipeline.py` | Chạy OCR → dịch → render; dừng ngay khi một bước lỗi. |
+| `pipeline.py` | Chạy OCR → dò watermark → dịch → render; dừng ngay khi một bước lỗi (trừ bước dò watermark). |
 | `ocr_pass.py` | OCR (PaddleOCR); gộp các lần nhận diện thành segment. |
 | `translate_pass.py` | Hồ sơ truyện, người nói, dịch theo cặp xưng hô, rà soát. |
 | `script.py` | Xóa chữ gốc, vẽ phụ đề tiếng Việt, ghép tiếng (NVENC). |
@@ -81,6 +101,6 @@ Mọi chỗ sửa tay đều được giữ khi chạy lại. Nhờ cache, chỉ
 | `jobs.py` | Đường dẫn dữ liệu theo từng video / series. |
 | `config.py` | Cấu hình. Có thể ghi đè bằng biến môi trường `MONGGU_CONFIG=<file.json>`. |
 | `audio_tools.py` | Tách giọng / ghép tiếng (chạy tay). |
-| `wm_remove.py` | Xóa watermark (thử nghiệm, chạy tay). |
+| `wm_track.py` | Dò watermark chạy (tự nhận, bám mọi frame) để render xóa. |
 
 Thiết kế và kế hoạch nằm trong `docs/superpowers/`.

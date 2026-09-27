@@ -5,6 +5,7 @@ Hầu hết đọc/ghi file ở **thư mục hiện tại** (vd `input.mp4`), n�
 
 | File | Việc đã làm |
 |---|---|
+| `wm_remove.py` | Xóa watermark chạy bằng OCR dày mọi frame + nội suy (chậm, còn sót). Đã được `wm_track.py` thay. |
 | `wm_ocr_probe.py` | Dò vị trí watermark bằng OCR (tạo `wm_anchors.json`, `_wm_probe_out/`) cho `wm_remove.py` |
 | `wm_template.png` | Mẫu watermark của lần thử template-matching (bỏ dở) |
 | `raw_map.py` | Gộp trùng `translation_map.json` cũ (định dạng trước khi có `lines.json`) |
