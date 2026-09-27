@@ -28,6 +28,10 @@
 - Ở frame watermark mờ tới mức không dò được (điểm khớp tại chỗ thật chỉ 0,05–0,13, bằng nhiễu), mắt người cũng gần như không thấy nó.
 - Ở frame nội suy mà mắt còn thấy watermark, khung đều nằm đúng lên chữ.
 - Khớp nhầm duy nhất là trên mảng nền **trơn**: NCC tự khuếch đại nhiễu ở vùng phẳng. **Cổng năng lượng** (mục 4.3) đã loại được nó.
+- **Bản nháp chạy đúng luồng sản xuất** (tự nhận từ `ocr_data` của pipeline, dựng mẫu từ box OCR của pipeline):
+  - `newvideo`: lệch trung vị 3,6 px, lớn nhất 7,8 px so với 19 mốc; phủ frame 152–3174;
+  - mask chiếm 63% hộp (đúng hình nét chữ);
+  - xóa thử trên 5 frame thật thì hết cả chữ lẫn viền. Nền nhiều vân còn vệt nhòe nhẹ của inpaint.
 
 ## 3. Kiến trúc
 
@@ -58,7 +62,7 @@ Hằng số đặt ở đầu file, không đưa vào config (không cần chỉ
 Gom các lần OCR theo chữ (bỏ khoảng trắng). Chữ là **ứng viên** khi thỏa tất cả:
 - dài ≥ 4 ký tự và xuất hiện ≥ 10 lần;
 - **có mặt ≥ 40% số đoạn 10 giây** của video;
-- tâm box tản ≥ 100 px (độ lệch chuẩn 2 chiều);
+- tâm box tản ≥ 5% đường chéo khung (độ lệch chuẩn 2 chiều; ≈ 90 px ở 1440×1080);
 - bề rộng box ổn định (hệ số biến thiên ≤ 0,15).
 
 Chọn ứng viên xuất hiện nhiều nhất; không có thì `found: false`.
@@ -90,10 +94,11 @@ Số liệu chốt ngưỡng:
 3. **Khoảng giữa 2 mốc liên tiếp:**
    - nội suy thẳng, rồi dò lại quanh điểm nội suy ở full-res (±24 px);
    - điểm ≥ 0,30 thì lấy vị trí dò được (có bằng chứng);
-   - nếu vị trí đó lệch khỏi đường thẳng > 8 px thì đó là chỗ đổi hướng: nó thành mốc mới. Các frame giữa mốc trước và mốc mới được tính lại theo đoạn thẳng mới, nhưng chỉ những frame còn trong bộ đệm 2 s (bước 5); frame cũ hơn giữ nguyên;
+   - nếu vị trí đó lệch khỏi đường thẳng > 8 px thì đó là chỗ đổi hướng: nó thành mốc mới. Các frame **nội suy** giữa mốc trước và mốc mới được nội suy lại theo đoạn thẳng mới (không cần đọc lại ảnh); frame có bằng chứng giữ nguyên;
    - còn lại giữ vị trí nội suy (không có bằng chứng).
 4. Chỉ bám trong `[mốc đầu, mốc cuối]`, không đoán ra ngoài.
-5. **Bộ nhớ:** đọc video tuần tự 2 lượt (dò toàn khung, rồi lấp khoảng). Chỉ giữ ảnh xám của tối đa 2 s gần nhất để tính lại khi gặp chỗ đổi hướng (≈100 MB), không giữ cả video trong RAM.
+5. **Bộ nhớ:** đọc video tuần tự 2 lượt (dò toàn khung, rồi lấp khoảng). Không giữ ảnh trong RAM, chỉ giữ vị trí và điểm của mỗi frame.
+6. **Thời gian đo trên bản nháp** (cùng code với plan): 71 s cho `newvideo` 132 s, tức khoảng 0,55× thời lượng video. Video 30 phút mất khoảng 16 phút.
 
 ### 4.4 Dữ liệu ra
 
