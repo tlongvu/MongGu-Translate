@@ -107,6 +107,23 @@ def test_open_job_errors_are_clean_and_side_effect_free():
         _cleanup(d)
 
 
+def test_open_job_has_watermark_paths_and_working_video():
+    d = _setup()
+    try:
+        v = _video(d, "a", "tap1.mp4", b"video-1")
+        j = jobs.open_job(v, create=True)
+        assert j.wm_track == os.path.join(j.dir, "wm_track.json")
+        assert j.wm_mask == os.path.join(j.dir, "wm_mask.png")
+        assert j.wm_preview == os.path.join(j.dir, "wm_preview.png")
+        # OCR không convert fps → đọc thẳng video gốc; có convert → bản trong job
+        assert jobs.working_video(j, {"video": "tap1.mp4", "original_video": "tap1.mp4"}, v) == v
+        assert jobs.working_video(j, {"video": "tap1_25fps.mp4", "original_video": "tap1.mp4"}, v) == \
+            os.path.join(j.dir, "tap1_25fps.mp4")
+        assert jobs.working_video(j, {}, v) == v
+    finally:
+        _cleanup(d)
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     passed = 0

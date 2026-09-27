@@ -47,7 +47,7 @@ from config import (
     SUBTITLE_BG_ENABLE, SUBTITLE_BG_COLOR, SUBTITLE_BG_ALPHA,
     SUBTITLE_BG_PAD, SUBTITLE_BG_RADIUS,
 )
-from jobs import open_job, JobError
+from jobs import open_job, JobError, working_video
 
 
 # ──────────────────────────────────────────────
@@ -1215,22 +1215,13 @@ if __name__ == "__main__":
     # ── Analyze video (get path) ──
     print(f"\n[2/4] Chuan bi render...")
 
-    # Nếu OCR đã convert video (vd: 60fps → 25fps), dùng video đã convert để render
-    # (frame indices trong ocr_data.json tương ứng với video đã convert)
-    converted_video = ocr_data.get("video", "")
-    original_video = ocr_data.get("original_video", args.input)
-
-    # ocr_pass ghi video đã convert vào thư mục job (chỉ lưu basename)
-    converted_path = os.path.join(job.dir, converted_video)
-    if converted_video and converted_video != original_video:
-        if not os.path.exists(converted_path):
-            print(f"  [ERROR] Thiếu video đã convert fps: {converted_path} (bị xóa?) — chạy lại OCR để tạo lại.")
-            sys.exit(1)
-        video_path = converted_path
-        audio_source = args.input  # video convert đã bỏ tiếng (-an); tiếng lấy từ video gốc
-    else:
-        video_path = args.input
-        audio_source = args.input
+    # OCR đã convert fps (vd 60 → 25) thì render trên bản convert trong job: frame index trong ocr_data là của nó.
+    # Tiếng luôn lấy từ video gốc (bản convert đã bỏ tiếng).
+    video_path = working_video(job, ocr_data, args.input)
+    audio_source = args.input
+    if video_path != args.input and not os.path.exists(video_path):
+        print(f"  [ERROR] Thiếu video đã convert fps: {video_path} (bị xóa?) — chạy lại OCR để tạo lại.")
+        sys.exit(1)
 
     # Chặn render nhầm video: dữ liệu OCR phải khớp video sắp render
     cap = cv2.VideoCapture(video_path)

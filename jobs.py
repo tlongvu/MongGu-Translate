@@ -73,4 +73,16 @@ def open_job(video_path: str, series: str = None, create: bool = False) -> Simpl
         lines=os.path.join(d, "lines.json"),
         output=os.path.join(d, f"{name}_vi.mp4"),
         story=os.path.join(shared, "story.json"),
+        wm_track=os.path.join(d, "wm_track.json"),
+        wm_mask=os.path.join(d, "wm_mask.png"),
+        wm_preview=os.path.join(d, "wm_preview.png"),
     )
+
+
+def working_video(job, ocr_data: dict, input_path: str) -> str:
+    """Video mà chỉ số frame trong ocr_data tham chiếu tới: bản convert fps trong job nếu OCR đã convert,
+    không thì chính video gốc. Render và wm_track đọc frame từ đây (tiếng luôn lấy từ video gốc)."""
+    converted = ocr_data.get("video", "")
+    if converted and converted != ocr_data.get("original_video", input_path):
+        return os.path.join(job.dir, converted)
+    return input_path

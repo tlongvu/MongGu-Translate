@@ -9,6 +9,7 @@ import sys
 import json
 import shutil
 import tempfile
+import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -449,6 +450,20 @@ def test_write_json_atomic_keeps_old_file_on_error():
         assert os.listdir(tmpdir) == ["data.json"], "Không được để lại file tạm"
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def test_imwrite_any_roundtrip_unicode_path():
+    d = tempfile.mkdtemp(prefix="ảnh 修仙 ")
+    try:
+        img = np.zeros((6, 9), np.uint8)
+        img[2:4, 3:7] = 255
+        p = os.path.join(d, "mặt nạ.png")
+        utils.imwrite_any(p, img)
+        back = utils.imread_gray(p)
+        assert back is not None and (back == img).all()
+        assert utils.imread_gray(os.path.join(d, "không có.png")) is None
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
 
 
 # ── Standalone runner (không cần pytest) ──
