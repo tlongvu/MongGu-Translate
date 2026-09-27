@@ -123,7 +123,7 @@ def test_track_ignores_static_lookalike_while_watermark_is_faint():
     d = tempfile.mkdtemp()
     try:
         path = os.path.join(d, "synth.mp4")
-        centers, size = wm_synth.make_video(path, distractor=True)
+        centers, size = wm_synth.make_video(path, distractor=(wm_synth.DISTRACT, wm_synth.DISTRACT_AT))
         res, _ = wm_track.track_watermark(path, wm_synth.fake_ocr(centers, size, "synth.mp4"))
         xy = np.array(res["xy"], float)
         frames = np.arange(res["start"], res["start"] + len(xy))
@@ -139,6 +139,44 @@ def test_hermite_follows_curve_and_is_linear_on_chord():
     assert np.allclose(wm_track._hermite(pa, np.array([1.0, 0.0]), pb, np.array([1.0, 2.0]), 0, 100, 50), [50, 25])
     chord = (pb - pa) / 100
     assert np.allclose(wm_track._hermite(pa, chord, pb, chord, 0, 100, 30), [30, 30]), "vận tốc = dây cung → thẳng"
+
+
+def test_track_vetoes_reachable_lookalike_contradicted_by_ocr():
+    # Vật đứng yên xuất hiện giữa một đoạn mờ dài: với tới được từ quỹ đạo, nối vào thì chuỗi thêm đỉnh.
+    # Chỉ cần một lần OCR đọc đúng chữ watermark ở chỗ khác trong lúc đó là loại được nó.
+    d = tempfile.mkdtemp()
+    try:
+        path = os.path.join(d, "synth.mp4")
+        faint, dis_frames, dis_at = range(40, 200), range(100, 131), (300, 200)
+        centers, size = wm_synth.make_video(path, distractor=(dis_frames, dis_at), faint=faint)
+        ocr = wm_synth.fake_ocr(centers, size, "synth.mp4", faint=faint, extra=[115])
+        res, _ = wm_track.track_watermark(path, ocr)
+        xy = np.array(res["xy"], float)
+        frames = np.arange(res["start"], res["start"] + len(xy))
+        dist = np.hypot(*(xy[np.isin(frames, list(dis_frames))] - np.array(dis_at, float)).T)
+        assert dist.min() > 30, f"bám dính vào vật đứng yên (cách {dist.min():.0f}px)"
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_fill_gaps_redetects_and_follows_turn_between_distant_anchors():
+    # Nhánh dò lại + đổi hướng của fill_gaps: bỏ các mốc quanh chỗ rẽ (frame 150, chữ còn rõ) → phải tự dò lại để bám
+    d = tempfile.mkdtemp()
+    try:
+        path = os.path.join(d, "synth.mp4")
+        centers, size = wm_synth.make_video(path)
+        tpl, tpl_small, scale, _ = wm_track.build_template(
+            path, wm_track.find_moving_wm(wm_synth.fake_ocr(centers, size, "synth.mp4")))
+        pos, score = wm_track.detect_all(path, tpl_small, scale, wm_synth.N)
+        anchors = [a for a in wm_track.pick_anchors(pos, score, wm_synth.FPS) if not 110 <= a <= 200]
+        xy, ev = wm_track.fill_gaps(path, anchors, pos, tpl, wm_synth.FPS)
+        frames = np.arange(anchors[0], anchors[0] + len(xy))
+        gap = (frames > 110) & (frames < 200)
+        err = np.hypot(*(xy - centers[frames]).T)
+        assert ev[gap].mean() > 0.5, "phải dò lại được watermark (còn rõ) trong khoảng không có mốc"
+        assert err[gap].max() <= 3, f"lệch {err[gap].max():.1f}px quanh chỗ rẽ (đi thẳng sẽ lệch ~69px)"
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
 
 
 def test_run_writes_track_mask_preview_and_can_be_disabled():
@@ -193,6 +231,8 @@ def test_load_wm_track_ignores_missing_or_stale():
         pos, mask = s.load_wm_track(job, 100)
         assert pos == {10: (5.0, 6.0), 11: (7.0, 8.0)} and mask.shape == (4, 6)
         assert s.load_wm_track(job, 999) == ({}, None), "OCR chạy lại (số frame khác) → bỏ qua track cũ"
+        utils.write_json_atomic(job.wm_track, {"found": True, "total_frames": 100})   # sửa tay hỏng: thiếu start/xy
+        assert s.load_wm_track(job, 100) == ({}, None), "JSON sai dạng → cảnh báo, không crash render"
         utils.write_json_atomic(job.wm_track, {"found": False, "reason": "x"})
         assert s.load_wm_track(job, 100) == ({}, None)
     finally:

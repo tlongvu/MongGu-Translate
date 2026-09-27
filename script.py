@@ -358,21 +358,22 @@ def load_wm_track(job, total_frames: int):
     try:
         with open(job.wm_track, encoding="utf-8") as f:
             t = json.load(f)
-    except ValueError as e:
-        print(f"  [WARN] {job.wm_track} hỏng ({e}) — bỏ qua xóa watermark chạy.")
-        return {}, None
-    if not t.get("found"):
-        return {}, None
-    if t.get("total_frames") != total_frames:
-        print("  [WARN] wm_track.json không khớp video (OCR đã chạy lại?) — bỏ qua xóa watermark chạy. "
-              "Chạy lại: python pipeline.py --input <video> --only wm")
+        if not t.get("found"):
+            return {}, None
+        if t.get("total_frames") != total_frames:
+            print("  [WARN] wm_track.json không khớp video (OCR đã chạy lại?) — bỏ qua xóa watermark chạy. "
+                  "Chạy lại: python pipeline.py --input <video> --only wm")
+            return {}, None
+        start = int(t["start"])
+        pos = {start + i: (float(x), float(y)) for i, (x, y) in enumerate(t["xy"])}
+    except (ValueError, KeyError, TypeError, AttributeError) as e:   # hỏng / sửa tay sai dạng: đừng làm sập render
+        print(f"  [WARN] {job.wm_track} hỏng ({e!r}) — bỏ qua xóa watermark chạy.")
         return {}, None
     mask = imread_gray(job.wm_mask)
     if mask is None:
         print(f"  [WARN] Thiếu {job.wm_mask} — bỏ qua xóa watermark chạy.")
         return {}, None
-    start = int(t["start"])
-    return {start + i: (float(x), float(y)) for i, (x, y) in enumerate(t["xy"])}, mask
+    return pos, mask
 
 
 def _gpu_resize(frame, new_w, new_h):

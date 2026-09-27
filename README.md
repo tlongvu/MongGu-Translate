@@ -75,6 +75,7 @@ Watermark chạy là chữ ID nhỏ, mờ, trôi khắp khung hình (vd "原创@
 - **Kiểm:** log `[WM] Thấy watermark chạy '…' — bám N frame (…% có bằng chứng)`, và ảnh `jobs/<tên>/wm_preview.png` (khung xanh = dò thấy, vàng = nội suy) phải nằm đúng lên chữ.
 - **Chạy lại riêng bước này:** `--only wm`, rồi `--only render`.
 - **Tắt cho một video:** tạo file JSON `{"WM_TRACK": false}`, đặt biến môi trường `MONGGU_CONFIG` trỏ tới file đó, rồi chạy `--only wm` và `--only render`.
+- **Thời gian:** thêm khoảng 0,5× thời lượng video (video 2 phút ≈ 1 phút, 30 phút ≈ 16 phút). Log in tiến độ mỗi 10%.
 - **Giới hạn:**
   - mỗi video 1 watermark chạy;
   - watermark tĩnh vẫn dùng `SUPPRESS_TEXTS`;

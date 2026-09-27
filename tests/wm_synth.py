@@ -30,8 +30,9 @@ def glyph():
     return edge[sl].astype(np.float32) / 255, fill[sl].astype(np.float32) / 255
 
 
-def make_video(path, distractor=False):
-    """Ghi video mp4v; trả về (tâm thật từng frame, (rộng, cao) của chữ). distractor=True: thêm vật giống chữ đứng yên."""
+def make_video(path, distractor=None, faint=FAINT):
+    """Ghi video mp4v; trả về (tâm thật từng frame, (rộng, cao) của chữ).
+    faint: các frame chữ gần như vô hình. distractor = (các frame, (x, y)): thêm vật giống hệt chữ nhưng đứng yên."""
     rng = np.random.default_rng(0)
     tex = cv2.GaussianBlur(rng.integers(0, 256, (H + 40, W + N + 40)).astype(np.float32), (0, 0), 2)
     tex = cv2.normalize(tex, None, 40, 200, cv2.NORM_MINMAX)
@@ -43,13 +44,13 @@ def make_video(path, distractor=False):
     for t in range(N):
         bg = tex[20:20 + H, t:t + W].copy()           # nền trôi 1 px/frame
         bg[10:80, 330:470] = 200.0                    # mảng trơn
-        if distractor and t in DISTRACT:
-            dx0, dy0 = int(DISTRACT_AT[0] - gw / 2), int(DISTRACT_AT[1] - gh / 2)
+        if distractor and t in distractor[0]:
+            dx0, dy0 = int(distractor[1][0] - gw / 2), int(distractor[1][1] - gh / 2)
             droi = bg[dy0:dy0 + gh, dx0:dx0 + gw]
             bg[dy0:dy0 + gh, dx0:dx0 + gw] = (1 - 0.6 * edge) * droi + 0.6 * edge * ov
         c = truth(t)
         x0, y0 = int(round(c[0] - gw / 2)), int(round(c[1] - gh / 2))
-        a = (0.08 if t in FAINT else 0.6) * edge
+        a = (0.08 if t in faint else 0.6) * edge
         roi = bg[y0:y0 + gh, x0:x0 + gw]
         bg[y0:y0 + gh, x0:x0 + gw] = (1 - a) * roi + a * ov
         centers.append((x0 + gw / 2, y0 + gh / 2))
@@ -58,13 +59,12 @@ def make_video(path, distractor=False):
     return np.array(centers), (gw, gh)
 
 
-def fake_ocr(centers, size, video_name):
-    """ocr_data giả: 'WM@12' đọc đủ mỗi 8 frame (trừ đoạn mờ) + 1 câu thoại đứng yên."""
+def fake_ocr(centers, size, video_name, faint=FAINT, extra=()):
+    """ocr_data giả: 'WM@12' đọc đủ mỗi 8 frame (trừ đoạn mờ) + các frame trong extra (OCR hiếm hoi đọc được
+    lúc mờ) + 1 câu thoại đứng yên."""
     gw, gh = size
     fd = {}
-    for t in range(0, N, 8):
-        if t in FAINT:
-            continue
+    for t in sorted({t for t in range(0, N, 8) if t not in faint} | set(extra)):
         cx, cy = centers[t]
         x0, y0 = cx - gw / 2, cy - gh / 2
         fd[str(t)] = [{"text": "WM@12", "confidence": 0.95,

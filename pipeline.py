@@ -121,7 +121,8 @@ def main():
         run_step("Bước 1/4 — OCR", "ocr_pass.py", ocr_args)
 
     if run_wm:
-        run_step("Bước 2/4 — Dò watermark chạy", "wm_track.py", ["--input", args.input], required=False)
+        # chạy riêng (--only wm) mà lỗi thì phải báo lỗi thật; trong cả pipeline thì chỉ cảnh báo
+        run_step("Bước 2/4 — Dò watermark chạy", "wm_track.py", ["--input", args.input], required=(args.only == "wm"))
 
     if run_tr:
         run_step("Bước 3/4 — Dịch", "translate_pass.py", ["--input", args.input])
