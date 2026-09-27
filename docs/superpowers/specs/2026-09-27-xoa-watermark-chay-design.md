@@ -92,8 +92,8 @@ Số liệu chốt ngưỡng:
    - Ghi lại đỉnh tốt nhất và điểm.
 2. **Mốc** (sửa sau kiểm thật, xem mục 10):
    - **nối đoạn quỹ đạo:** mọi đỉnh ≥ 0,30 được nối vào đoạn đang mở gần nhất mà nó với tới được (cách ≤ 1 s, dời ≤ 100 px/s + 6 px). Nhiều đoạn sống song song được;
-   - **chỉ giữ đoạn** có ≥ 3 đỉnh và ít nhất 1 đỉnh chắc (≥ 0,45);
-   - **chuỗi dài nhất:** chọn chuỗi đoạn nối được với nhau bằng chuyển động khả thi, có tổng số đỉnh lớn nhất. Mốc = các đỉnh của chuỗi. Chữ tĩnh khớp nhầm thành đoạn riêng, không nối được vào quỹ đạo watermark nên bị bỏ. Watermark dừng thật (đoạn cuối `newvideo`, điểm 0,81) vẫn nối được nên được giữ;
+   - **chỉ giữ đoạn** có ≥ 3 đỉnh, ít nhất 1 đỉnh chắc (≥ 0,45), và **không bị OCR phủ nhận**. Bị phủ nhận nghĩa là trong khoảng thời gian của đoạn có một lần OCR đọc đúng chữ watermark nằm cách đoạn > 30 px (nội suy vị trí đoạn tại frame đó). Đoạn như vậy là chữ tĩnh / nhãn khớp nhầm, kể cả khi nó với tới được quỹ đạo. Trên `newvideo`: cụm khóa nhầm cách lần đọc 97 px; mọi đoạn thật ≤ 14,3 px;
+   - **chuỗi dài nhất:** chọn chuỗi đoạn nối được với nhau bằng chuyển động khả thi, có tổng số đỉnh lớn nhất. Mốc = các đỉnh của chuỗi. Watermark dừng thật (đoạn cuối `newvideo`, điểm 0,81; lần đọc cách 4,5 px) vẫn được giữ;
    - mốc được chỉnh lại ở full-res (±6 px). Có dưới 20 mốc thì bỏ qua, kèm cảnh báo.
 3. **Khoảng giữa 2 mốc liên tiếp:**
    - dự đoán bằng **nội suy Hermite**: khớp vị trí và vận tốc 2 đầu, vận tốc = hệ số góc các mốc trong 1 s quanh mỗi đầu (các mốc đó phải trải ≥ 0,5 s, không thì dùng dây cung → thành nội suy thẳng);
@@ -185,6 +185,12 @@ Dữ liệu thật:
 1. **Khóa nhầm vật đứng yên.** Ở frame 472–575, một cụm đỉnh đứng yên (điểm 0,46, cạnh nhãn "*女主内心") được nhận làm mốc vì "tự nhất quán". Hậu quả là xóa sai chỗ và để sót watermark thật.
 2. **Nội suy thẳng qua đoạn cong.** Frame 194–396 là 8 giây không có bằng chứng; ở frame 300 lệch khoảng 60 px.
 
-**Sửa:** chuỗi đoạn quỹ đạo và nội suy Hermite (mục 4.3). Test mới dùng video tổng hợp có vật giống chữ đứng yên: code cũ lệch 297 px ở 40 frame, code mới lệch ≤ 2,2 px.
+**Sửa (Task 3b):** chuỗi đoạn quỹ đạo và nội suy Hermite (mục 4.3). Test mới dùng video tổng hợp có vật giống chữ đứng yên: code cũ lệch 297 px ở 40 frame, code mới lệch ≤ 2,2 px.
+
+**Review cuối → Task 3c.** Chỉ chọn chuỗi dài nhất chưa đủ. Vật đứng yên xuất hiện giữa một đoạn mờ dài thì *với tới được* quỹ đạo (4 px/frame cho vài giây là tới mọi chỗ), nên vẫn được nối vào nếu làm chuỗi thêm đỉnh. Ca dựng thử bám lệch 113 px; trên `newvideo` cụm 472–575 chỉ thua 26 đỉnh.
+- Thêm phép **loại theo OCR** (mục 4.3): ca dựng thử giờ tránh xa vật đứng yên ≥ 30 px (bản nháp: 75 px); `newvideo` giữ nguyên 909 mốc.
+- Thêm test cho nhánh dò lại / đổi hướng của `fill_gaps` (trước đó chưa test nào chạy qua).
+- `--only wm` lỗi thì báo lỗi thật; `load_wm_track` chịu được JSON sai dạng; in tiến độ mỗi 10%.
+- Còn hở: vật khớp nhầm xuất hiện lúc OCR không đọc được watermark lần nào mà vẫn nối được vào quỹ đạo thì vẫn có thể được chọn.
 
 **Giới hạn còn lại.** Trong khoảng hụt rất dài mà watermark mờ tới mức khớp mẫu không phân biệt được với nhiễu, vị trí chỉ là đoán. Ví dụ `newvideo` frame 606–1019 (16,5 s, chỉ 4 frame có bằng chứng): ở frame 835 chữ còn thấy lờ mờ, nhưng điểm khớp tại chỗ thật chỉ 0,25, là đỉnh thứ 5, thấp hơn nhiễu 0,29–0,34. Ở những đoạn đó có thể còn thấy watermark mờ, kèm vết nhòe gần đó. Muốn hơn nữa phải đổi tín hiệu dò (ví dụ tách lớp alpha nhiều frame) — việc riêng, chỉ làm khi user thấy cần.
