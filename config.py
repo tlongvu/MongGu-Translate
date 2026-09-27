@@ -106,7 +106,7 @@ INPAINT_RADIUS = 4              # Giảm từ 7 → 4 (nhanh hơn, vẫn clean t
 INPAINT_METHOD = "telea"        # "telea" | "ns" (chất lượng) | "fill" (siêu nhanh: blur fill)
 
 # ── Nền mờ bán trong suốt sau chữ (plate) — tăng độ đọc trên nền sáng/nhiễu ──
-SUBTITLE_BG_ENABLE = True        # Vẽ hộp nền mờ phía sau mỗi cụm phụ đề
+SUBTITLE_BG_ENABLE = False       # Vẽ hộp nền mờ phía sau mỗi cụm phụ đề
 SUBTITLE_BG_COLOR = (0, 0, 0)    # Màu nền (RGB)
 SUBTITLE_BG_ALPHA = 120          # Độ mờ 0-255 (0 = trong suốt, 255 = đặc)
 SUBTITLE_BG_PAD = 8              # Đệm quanh chữ (px)
