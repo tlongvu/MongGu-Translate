@@ -160,6 +160,48 @@ def test_track_vetoes_reachable_lookalike_contradicted_by_ocr():
         shutil.rmtree(d, ignore_errors=True)
 
 
+def test_track_watermark_hugging_frame_edge():
+    # Kênh 粥咪咪: watermark chạy sát mép khung (hộp OCR chạm mép) → vẫn phải dựng được mẫu và bám đúng
+    d = tempfile.mkdtemp()
+    try:
+        path = os.path.join(d, "synth.mp4")
+        gh = wm_synth.glyph()[0].shape[0]
+        centers, size = wm_synth.make_video(path, track=lambda t: np.array([60 + 1.5 * t, gh / 2]))
+        res, _ = wm_track.track_watermark(path, wm_synth.fake_ocr(centers, size, "synth.mp4"))
+        assert res["found"], res.get("reason")
+        xy = np.array(res["xy"], float)
+        frames = np.arange(res["start"], res["start"] + len(xy))
+        err = np.hypot(*(xy - centers[frames]).T)
+        assert err.max() <= 3, f"lệch {err.max():.1f}px khi chạy sát mép"
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_track_watermark_partly_outside_frame():
+    # Kênh 粥咪咪 ở mép dưới: chữ lòi ra ngoài khung vài px (hộp OCR bị cắt) → mẫu phải được lòi ra mép khi dò
+    d = tempfile.mkdtemp()
+    try:
+        path = os.path.join(d, "synth.mp4")
+        gh = wm_synth.glyph()[0].shape[0]
+        y_out = wm_synth.H - gh / 2 + 5                          # đáy chữ lòi ra ngoài khung 5 px
+
+        def track(t):                                            # chéo xuống tới mép dưới rồi chạy dọc mép sang trái
+            if t < 150:
+                return np.array([60 + 2.0 * t, 60 + (y_out - 60) * t / 150])
+            return np.array([360 - 1.5 * (t - 150), y_out])
+        centers, size = wm_synth.make_video(path, track=track)
+        res, _ = wm_track.track_watermark(path, wm_synth.fake_ocr(centers, size, "synth.mp4"))
+        assert res["found"], res.get("reason")
+        xy = np.array(res["xy"], float)
+        frames = np.arange(res["start"], res["start"] + len(xy))
+        edge = frames >= 160
+        assert edge.sum() >= 70, f"phải bám tiếp dọc mép dưới (chỉ có {edge.sum()} frame)"
+        err = np.hypot(*(xy[edge] - centers[frames[edge]]).T)
+        assert err.max() <= 4, f"lệch {err.max():.1f}px dọc mép dưới"
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
 def test_fill_gaps_redetects_and_follows_turn_between_distant_anchors():
     # Nhánh dò lại + đổi hướng của fill_gaps: bỏ các mốc quanh chỗ rẽ (frame 150, chữ còn rõ) → phải tự dò lại để bám
     d = tempfile.mkdtemp()

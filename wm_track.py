@@ -113,7 +113,10 @@ def _median_patch(grads, centers, tw, th):
     khác nên trung vị chỉ giữ lại nét chữ. → mảng (th+2*_MARGIN, tw+2*_MARGIN), hoặc None nếu quá ít patch."""
     patches = []
     for g, (cx, cy) in zip(grads, centers):
-        x0, y0 = int(round(cx - tw / 2)) - _PAD, int(round(cy - th / 2)) - _PAD
+        # Watermark hay chạy sát mép khung (kênh 粥咪咪): đệm _PAD px "không có nét" quanh khung để lề căn không
+        # bắt hộp chữ phải cách mép — chỉ cần hộp chữ nằm trong khung. Tọa độ trong g đệm = tọa độ gốc + _PAD.
+        g = cv2.copyMakeBorder(g, _PAD, _PAD, _PAD, _PAD, cv2.BORDER_CONSTANT, value=0)
+        x0, y0 = int(round(cx - tw / 2)), int(round(cy - th / 2))
         if x0 >= 0 and y0 >= 0 and x0 + tw + 2 * _PAD <= g.shape[1] and y0 + th + 2 * _PAD <= g.shape[0]:
             patches.append(g[y0:y0 + th + 2 * _PAD, x0:x0 + tw + 2 * _PAD])
     if len(patches) < MIN_TEMPLATE_READS:
@@ -184,11 +187,10 @@ def detect_all(video_path, tpl_small, scale, n_frames):
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         if scale != 1.0:
             gray = cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
-        g = _grad(gray)
-        if g.shape[0] < th or g.shape[1] < tw:
-            break
+        # đệm nửa mẫu "không có nét" quanh khung: watermark chạy sát / lòi ra mép (kênh 粥咪咪 ở mép dưới) vẫn khớp được
+        g = cv2.copyMakeBorder(_grad(gray), th // 2, th // 2, tw // 2, tw // 2, cv2.BORDER_CONSTANT, value=0)
         _, s, _, (x, y) = cv2.minMaxLoc(_gated_ncc(g, tpl_small))
-        pos[f] = ((x + tw / 2) / scale, (y + th / 2) / scale)
+        pos[f] = ((x - tw // 2 + tw / 2) / scale, (y - th // 2 + th / 2) / scale)
         score[f] = s
     cap.release()
     return pos, score
@@ -279,16 +281,23 @@ def _hermite(pa, va, pb, vb, a, b, f):
             + (-2 * s**3 + 3 * s**2) * pb + (s**3 - s**2) * t * vb)
 
 
+def _grad_crop(gray, x0, y0, cw, ch):
+    """Gradient của vùng gray[y0:y0+ch, x0:x0+cw]; phần nằm ngoài khung = 0 (không có nét)."""
+    out = np.zeros((ch, cw), np.float32)
+    sx0, sy0 = max(0, x0), max(0, y0)
+    sx1, sy1 = min(gray.shape[1], x0 + cw), min(gray.shape[0], y0 + ch)
+    if sx1 > sx0 and sy1 > sy0:
+        out[sy0 - y0:sy1 - y0, sx0 - x0:sx1 - x0] = _grad(gray[sy0:sy1, sx0:sx1])
+    return out
+
+
 def _local_match(gray, center, tpl, r):
-    """Khớp mẫu full-res trong cửa sổ ±r quanh center → (tâm tìm được, điểm)."""
+    """Khớp mẫu full-res trong cửa sổ ±r quanh center → (tâm tìm được, điểm). Cửa sổ được lòi ra ngoài khung
+    (phần ngoài = không có nét) để bám watermark chạy sát / lòi ra mép."""
     th, tw = tpl.shape
-    h, w = gray.shape
-    x0 = int(np.clip(round(center[0] - tw / 2) - r, 0, max(0, w - tw - 2 * r)))
-    y0 = int(np.clip(round(center[1] - th / 2) - r, 0, max(0, h - th - 2 * r)))
-    g = _grad(gray[y0:y0 + th + 2 * r, x0:x0 + tw + 2 * r])
-    if g.shape[0] < th or g.shape[1] < tw:
-        return np.asarray(center, np.float32), -1.0
-    _, s, _, (mx, my) = cv2.minMaxLoc(_gated_ncc(g, tpl))
+    x0 = int(round(center[0] - tw / 2)) - r
+    y0 = int(round(center[1] - th / 2)) - r
+    _, s, _, (mx, my) = cv2.minMaxLoc(_gated_ncc(_grad_crop(gray, x0, y0, tw + 2 * r, th + 2 * r), tpl))
     return np.array([x0 + mx + tw / 2, y0 + my + th / 2], np.float32), float(s)
 
 
