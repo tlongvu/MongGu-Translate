@@ -1,0 +1,71 @@
+"""Video tổng hợp + ocr_data giả cho test wm_track: chữ bán trong suốt (lõi trắng, viền tối) trôi trên nền
+có vân và trôi theo, có một đoạn gần như vô hình, đổi hướng giữa chừng, và một mảng nền trơn (nơi NCC dễ khớp nhầm)."""
+import cv2
+import numpy as np
+
+FPS, N, W, H = 25.0, 240, 480, 270
+FAINT = range(40, 80)      # đoạn gần như vô hình (độ mờ 0.08), nằm trên đoạn thẳng
+TURN = 150                 # đổi hướng (lúc watermark còn rõ)
+
+
+def truth(t):
+    """Tâm watermark ở frame t: thẳng tới TURN rồi rẽ."""
+    if t <= TURN:
+        return np.array([60 + 1.6 * t, 60 + 0.7 * t])
+    return truth(TURN) + np.array([-1.5, 0.5]) * (t - TURN)
+
+
+def glyph():
+    """(alpha viền+lõi, lõi) của chữ 'WM@12', cắt sát."""
+    font, sc = cv2.FONT_HERSHEY_SIMPLEX, 0.9
+    (tw, th), base = cv2.getTextSize("WM@12", font, sc, 2)
+    edge = np.zeros((th + base + 16, tw + 16), np.uint8)
+    fill = edge.copy()
+    cv2.putText(edge, "WM@12", (8, th + 8), font, sc, 255, 6)
+    cv2.putText(fill, "WM@12", (8, th + 8), font, sc, 255, 2)
+    ys, xs = np.nonzero(edge)
+    sl = (slice(ys.min(), ys.max() + 1), slice(xs.min(), xs.max() + 1))
+    return edge[sl].astype(np.float32) / 255, fill[sl].astype(np.float32) / 255
+
+
+def make_video(path):
+    """Ghi video mp4v; trả về (tâm thật từng frame, (rộng, cao) của chữ)."""
+    rng = np.random.default_rng(0)
+    tex = cv2.GaussianBlur(rng.integers(0, 256, (H + 40, W + N + 40)).astype(np.float32), (0, 0), 2)
+    tex = cv2.normalize(tex, None, 40, 200, cv2.NORM_MINMAX)
+    edge, fill = glyph()
+    gh, gw = edge.shape
+    ov = np.where(fill > 0.5, 255.0, 25.0)
+    vw = cv2.VideoWriter(path, cv2.VideoWriter_fourcc(*"mp4v"), FPS, (W, H))
+    centers = []
+    for t in range(N):
+        bg = tex[20:20 + H, t:t + W].copy()           # nền trôi 1 px/frame
+        bg[10:80, 330:470] = 200.0                    # mảng trơn
+        c = truth(t)
+        x0, y0 = int(round(c[0] - gw / 2)), int(round(c[1] - gh / 2))
+        a = (0.08 if t in FAINT else 0.6) * edge
+        roi = bg[y0:y0 + gh, x0:x0 + gw]
+        bg[y0:y0 + gh, x0:x0 + gw] = (1 - a) * roi + a * ov
+        centers.append((x0 + gw / 2, y0 + gh / 2))
+        vw.write(cv2.cvtColor(np.clip(bg, 0, 255).astype(np.uint8), cv2.COLOR_GRAY2BGR))
+    vw.release()
+    return np.array(centers), (gw, gh)
+
+
+def fake_ocr(centers, size, video_name):
+    """ocr_data giả: 'WM@12' đọc đủ mỗi 8 frame (trừ đoạn mờ) + 1 câu thoại đứng yên."""
+    gw, gh = size
+    fd = {}
+    for t in range(0, N, 8):
+        if t in FAINT:
+            continue
+        cx, cy = centers[t]
+        x0, y0 = cx - gw / 2, cy - gh / 2
+        fd[str(t)] = [{"text": "WM@12", "confidence": 0.95,
+                       "box": [[x0, y0], [x0 + gw, y0], [x0 + gw, y0 + gh], [x0, y0 + gh]]}]
+    for t in range(100, 160, 4):
+        fd.setdefault(str(t), []).append({"text": "你好世界啊", "confidence": 0.99,
+                                         "box": [[180, 230], [300, 230], [300, 260], [180, 260]]})
+    return {"video": video_name, "original_video": video_name, "fps": FPS, "width": W, "height": H,
+            "total_frames": N, "ocr_interval_frames": 1, "frame_detections": fd, "text_segments": [],
+            "complete": True}

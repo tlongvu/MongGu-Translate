@@ -14,6 +14,7 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import wm_track  # noqa: E402
+import wm_synth  # noqa: E402
 
 
 def _det(text, cx, cy, w, h, conf=0.9):
@@ -76,6 +77,39 @@ def test_find_moving_wm_reads_are_frame_ordered_tuples():
     reads = wm_track.find_moving_wm(_ocr(fd))["reads"]
     assert [r[0] for r in reads] == list(range(0, 3000, 20)), "reads phải sắp theo frame"
     assert reads[1] == (20, 206.0, 153.0, 190.0, 46.0, 0.9), "tuple (frame, cx, cy, w, h, conf)"
+
+
+def test_track_follows_faint_turning_watermark_and_ignores_flat_region():
+    d = tempfile.mkdtemp()
+    try:
+        path = os.path.join(d, "synth.mp4")
+        centers, size = wm_synth.make_video(path)
+        res, mask = wm_track.track_watermark(path, wm_synth.fake_ocr(centers, size, "synth.mp4"))
+        assert res["found"] and res["text"] == "WM@12", res
+        xy = np.array(res["xy"], float)
+        ev = np.array([c == "1" for c in res["evidence"]])
+        frames = np.arange(res["start"], res["start"] + len(xy))
+        err = np.hypot(*(xy - centers[frames]).T)
+        assert len(xy) >= 0.9 * wm_synth.N, "phải phủ gần hết video"
+        assert (err[ev] <= 3).mean() >= 0.95, f"frame có bằng chứng lệch ≤ 3px: {(err[ev] <= 3).mean():.0%}"
+        assert err.max() <= 8, f"lệch lớn nhất {err.max():.1f}px (kể cả đoạn gần như vô hình)"
+        assert mask.dtype == np.uint8 and 0.2 < (mask > 0).mean() < 1.0, "mask hình nét chữ, không phải cả hộp"
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_track_reports_reason_when_no_watermark():
+    d = tempfile.mkdtemp()
+    try:
+        path = os.path.join(d, "synth.mp4")
+        centers, size = wm_synth.make_video(path)
+        data = wm_synth.fake_ocr(centers, size, "synth.mp4")
+        for dets in data["frame_detections"].values():
+            dets[:] = [x for x in dets if x["text"] != "WM@12"]
+        res, mask = wm_track.track_watermark(path, data)
+        assert res["found"] is False and "không thấy" in res["reason"] and mask is None
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
 
 
 if __name__ == "__main__":
