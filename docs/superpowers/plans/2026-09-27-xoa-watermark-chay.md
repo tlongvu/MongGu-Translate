@@ -564,6 +564,16 @@ def _ncc(img, tpl):
     return np.nan_to_num(r, nan=-1.0, posinf=-1.0, neginf=-1.0)
 
 
+def _gated_ncc(g, tpl):
+    """NCC của mẫu trên ảnh gradient g. Vị trí nền trơn (gradient TB trong cửa sổ < ENERGY_GATE × của mẫu) = -1:
+    ở đó NCC tự khuếch đại nhiễu thành 'giống chữ' (khớp nhầm duy nhất gặp trên video thật)."""
+    th, tw = tpl.shape
+    r = _ncc(g, tpl)
+    energy = cv2.boxFilter(g, -1, (tw, th), anchor=(0, 0), normalize=True)[:r.shape[0], :r.shape[1]]
+    r[energy < ENERGY_GATE * float(tpl.mean())] = -1.0
+    return r
+
+
 def _median_patch(grads, centers, tw, th):
     """Cắt patch gradient quanh các tâm, căn thẳng hàng (2 lượt, ±_PAD) rồi lấy trung vị: nền mỗi frame một
     khác nên trung vị chỉ giữ lại nét chữ. → mảng (th+2*_MARGIN, tw+2*_MARGIN), hoặc None nếu quá ít patch."""
@@ -628,7 +638,6 @@ def build_template(video_path, wm):
 def detect_all(video_path, tpl_small, scale, n_frames):
     """Lượt 1: dò toàn khung mọi frame (tỉ lệ scale) → (pos (n,2) tâm full-res, score (n,)); frame không đọc được: -1."""
     th, tw = tpl_small.shape
-    gate = ENERGY_GATE * float(tpl_small.mean())
     pos = np.zeros((n_frames, 2), np.float32)
     score = np.full(n_frames, -1.0, np.float32)
     cap = cv2.VideoCapture(video_path)
@@ -642,10 +651,7 @@ def detect_all(video_path, tpl_small, scale, n_frames):
         g = _grad(gray)
         if g.shape[0] < th or g.shape[1] < tw:
             break
-        r = _ncc(g, tpl_small)
-        energy = cv2.boxFilter(g, -1, (tw, th), anchor=(0, 0), normalize=True)[:r.shape[0], :r.shape[1]]
-        r[energy < gate] = -1.0
-        _, s, _, (x, y) = cv2.minMaxLoc(r)
+        _, s, _, (x, y) = cv2.minMaxLoc(_gated_ncc(g, tpl_small))
         pos[f] = ((x + tw / 2) / scale, (y + th / 2) / scale)
         score[f] = s
     cap.release()
@@ -678,10 +684,7 @@ def _local_match(gray, center, tpl, r):
     g = _grad(gray[y0:y0 + th + 2 * r, x0:x0 + tw + 2 * r])
     if g.shape[0] < th or g.shape[1] < tw:
         return np.asarray(center, np.float32), -1.0
-    res = _ncc(g, tpl)
-    energy = cv2.boxFilter(g, -1, (tw, th), anchor=(0, 0), normalize=True)[:res.shape[0], :res.shape[1]]
-    res[energy < ENERGY_GATE * float(tpl.mean())] = -1.0
-    _, s, _, (mx, my) = cv2.minMaxLoc(res)
+    _, s, _, (mx, my) = cv2.minMaxLoc(_gated_ncc(g, tpl))
     return np.array([x0 + mx + tw / 2, y0 + my + th / 2], np.float32), float(s)
 
 
