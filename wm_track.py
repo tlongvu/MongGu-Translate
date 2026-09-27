@@ -14,6 +14,7 @@ Chạy tay:  python wm_track.py --input video.mp4     (cần OCR trước)
 
 import argparse
 import json
+import math
 import os
 import sys
 import time
@@ -41,12 +42,14 @@ FULL_READ_TOL = 0.08      # lần OCR "đọc đủ chữ": bề rộng lệch �
 MAX_TEMPLATE_READS = 30   # dựng mẫu từ tối đa 30 lần đọc đủ, rải đều theo thời gian
 MIN_TEMPLATE_READS = 5
 SURE = 0.45               # điểm khớp toàn khung đủ chắc để làm mốc
+WEAK = 0.30               # đỉnh yếu: chỉ dùng khi thuộc một đoạn quỹ đạo có ít nhất 1 đỉnh chắc
+MIN_TRACKLET = 3          # đoạn quỹ đạo ngắn hơn 3 đỉnh = nhiễu
 LOCAL_OK = 0.30           # điểm khớp tại chỗ (quanh điểm nội suy) chấp nhận được
 MAX_SPEED = 100           # px/giây — watermark đo được trôi 8–50 px/s
 ENERGY_GATE = 0.35        # cửa sổ có gradient TB < 35% của mẫu = nền trơn → NCC khuếch đại nhiễu, không tin
 MIN_ANCHORS = 20
 LOCAL_R = 24              # bán kính dò lại quanh điểm nội suy (px, full-res)
-SPLIT_DEV = 8             # vị trí dò lại lệch khỏi đường thẳng > 8 px → chỗ đổi hướng
+SPLIT_DEV = 8             # vị trí dò lại lệch khỏi đường dự đoán > 8 px → chỗ đổi hướng
 MIN_SMALL_W = 48          # mẫu nửa độ phân giải hẹp hơn thế → dò toàn khung ở độ phân giải gốc
 _PAD, _MARGIN = 8, 4      # lề để căn patch (±8 px) / lề giữ quanh mẫu cho mask (4 px)
 
@@ -187,21 +190,72 @@ def detect_all(video_path, tpl_small, scale, n_frames):
     return pos, score
 
 
+def _tracklets(pos, score, fps):
+    """Nối các đỉnh ≥ WEAK thành đoạn quỹ đạo: mỗi đỉnh nối vào đoạn đang mở gần nhất mà nó với tới được
+    (cách ≤ 1 s, dời ≤ MAX_SPEED); không với tới đoạn nào thì mở đoạn mới. Nhiều đoạn sống song song được
+    (watermark thật và chữ tĩnh khớp nhầm xen kẽ nhau từng frame)."""
+    cand = np.flatnonzero(score >= WEAK)
+    win, vmax = max(1, int(round(fps))), MAX_SPEED / fps
+    active, done = [], []
+    for i in cand:
+        still = []
+        for t in active:
+            (still if i - t[-1] <= win else done).append(t)
+        active = still
+        best, best_d = None, None
+        for t in active:
+            d = float(np.hypot(*(pos[i] - pos[t[-1]])))
+            if d <= vmax * (i - t[-1]) + 6 and (best_d is None or d < best_d):
+                best, best_d = t, d
+        if best is None:
+            active.append([int(i)])
+        else:
+            best.append(int(i))
+    return done + active
+
+
 def pick_anchors(pos, score, fps):
-    """Mốc chắc: điểm ≥ SURE và có ≥ 3 đỉnh chắc khác trong ±1 s nằm trong tầm di chuyển (loại khớp nhầm lẻ)."""
-    sure = np.flatnonzero(score >= SURE)
-    win = max(1, int(round(fps)))
+    """Mốc = các đỉnh của chuỗi đoạn quỹ đạo dài nhất (tổng số đỉnh) nối được với nhau bằng chuyển động khả thi.
+    Chỉ xét đoạn ≥ MIN_TRACKLET đỉnh có ít nhất 1 đỉnh chắc (≥ SURE). Chữ tĩnh / nhãn khớp nhầm thành đoạn riêng,
+    không nối được vào quỹ đạo watermark → bị bỏ (trước đây chúng 'tự nhất quán' nên lọt thành mốc)."""
     vmax = MAX_SPEED / fps
-    keep = []
-    for k, i in enumerate(sure):
-        lo, hi = np.searchsorted(sure, [i - win, i + win + 1])
-        nb = np.concatenate([sure[lo:k], sure[k + 1:hi]])
-        if len(nb) < 3:
-            continue
-        d = np.hypot(*(pos[nb] - pos[i]).T)
-        if np.sum(d <= vmax * np.abs(nb - i) + 6) >= 3:
-            keep.append(int(i))
-    return keep
+    segs = sorted((t for t in _tracklets(pos, score, fps)
+                   if len(t) >= MIN_TRACKLET and max(score[i] for i in t) >= SURE), key=lambda t: t[0])
+    if not segs:
+        return []
+    ends = [(t[0], t[-1], pos[t[0]], pos[t[-1]]) for t in segs]
+    total, prev = [len(t) for t in segs], [-1] * len(segs)
+    for j in range(len(segs)):   # ponytail: O(số đoạn²), vài nghìn đoạn vẫn vài giây; cần nhanh hơn thì giới hạn cửa sổ i
+        b, pb = ends[j][0], ends[j][2]
+        for i in range(j):
+            a, pa = ends[i][1], ends[i][3]
+            if b > a and total[i] + len(segs[j]) > total[j] and \
+                    math.hypot(pb[0] - pa[0], pb[1] - pa[1]) <= vmax * (b - a) + 6:
+                total[j], prev[j] = total[i] + len(segs[j]), i
+    j, chain = int(np.argmax(total)), []
+    while j >= 0:
+        chain = segs[j] + chain
+        j = prev[j]
+    return chain
+
+
+def _velocity(frames, pts, lo, hi, min_span):
+    """Vận tốc (px/frame) = hệ số góc bình phương tối thiểu của các mốc có frame trong [lo, hi];
+    None nếu < 2 mốc hoặc chúng trải < min_span frame (quá ngắn → vận tốc nhiễu, nhân lên qua khoảng dài thì văng)."""
+    m = (frames >= lo) & (frames <= hi)
+    if m.sum() < 2 or np.ptp(frames[m]) < min_span:
+        return None
+    f = frames[m].astype(np.float64)
+    return np.array([np.polyfit(f, pts[m, 0], 1)[0], np.polyfit(f, pts[m, 1], 1)[0]], np.float32)
+
+
+def _hermite(pa, va, pb, vb, a, b, f):
+    """Nội suy Hermite bậc 3 giữa (frame a, vị trí pa, vận tốc va) và (b, pb, vb): khớp cả vị trí lẫn vận tốc
+    2 đầu → đi theo đoạn cong trong khoảng mờ (nội suy thẳng lệch ~60 px ở newvideo frame 300).
+    Vận tốc 2 đầu = dây cung → đúng nội suy thẳng."""
+    t, s = b - a, (f - a) / (b - a)
+    return ((2 * s**3 - 3 * s**2 + 1) * pa + (s**3 - 2 * s**2 + s) * t * va
+            + (-2 * s**3 + 3 * s**2) * pb + (s**3 - s**2) * t * vb)
 
 
 def _local_match(gray, center, tpl, r):
@@ -217,16 +271,20 @@ def _local_match(gray, center, tpl, r):
     return np.array([x0 + mx + tw / 2, y0 + my + th / 2], np.float32), float(s)
 
 
-def fill_gaps(video_path, anchors, pos, tpl):
-    """Lượt 2: vị trí mọi frame trong [mốc đầu, mốc cuối]. Giữa 2 mốc: nội suy thẳng rồi dò lại tại chỗ;
-    vị trí dò được lệch khỏi đường thẳng > SPLIT_DEV → chỗ đổi hướng: thành mốc mới và nội suy lại các frame
-    không có bằng chứng từ mốc trước tới đây. → (xy (k,2), evidence (k,) bool) bắt đầu từ anchors[0]."""
+def fill_gaps(video_path, anchors, pos, tpl, fps):
+    """Lượt 2: vị trí mọi frame trong [mốc đầu, mốc cuối]. Giữa 2 mốc: nội suy Hermite (vận tốc 2 đầu ước từ các
+    mốc trong 1 s quanh đó; thiếu thì dây cung) rồi dò lại tại chỗ; vị trí dò được lệch khỏi đường dự đoán
+    > SPLIT_DEV → chỗ đổi hướng: thành mốc mới, các frame không có bằng chứng từ mốc trước tới đây nội suy lại thẳng,
+    phần sau đi thẳng tới mốc kế. → (xy (k,2), evidence (k,) bool) bắt đầu từ anchors[0]."""
     first, last = anchors[0], anchors[-1]
+    af = np.asarray(anchors)
+    ap = pos[af]
+    win = max(2, int(round(fps)))
     xy = np.zeros((last - first + 1, 2), np.float32)
     ev = np.zeros(last - first + 1, bool)
     cap = cv2.VideoCapture(video_path)
     cap.set(cv2.CAP_PROP_POS_FRAMES, first)
-    nxt, a, pa = 0, first, pos[first]
+    nxt, a, pa, va, vb = 0, first, pos[first], None, None
     for f in range(first, last + 1):
         ok, frame = cap.read()
         if not ok:   # video ngắn hơn dữ liệu: giữ vị trí cuối
@@ -238,9 +296,15 @@ def fill_gaps(video_path, anchors, pos, tpl):
             q, s = _local_match(gray, pos[f], tpl, 6)
             xy[i], ev[i] = (q if s >= LOCAL_OK else pos[f]), True
             a, pa, nxt = f, xy[i].copy(), nxt + 1
+            if nxt < len(anchors):
+                b = anchors[nxt]
+                chord = (pos[b] - pa) / (b - a)
+                va = _velocity(af, ap, a - win, a, win // 2)
+                vb = _velocity(af, ap, b, b + win, win // 2)
+                va, vb = (chord if va is None else va), (chord if vb is None else vb)
             continue
         b = anchors[nxt]
-        p = pa + (f - a) / (b - a) * (pos[b] - pa)
+        p = np.clip(_hermite(pa, va, pos[b], vb, a, b, f), 0, (gray.shape[1] - 1, gray.shape[0] - 1))
         q, s = _local_match(gray, p, tpl, LOCAL_R)
         if s < LOCAL_OK:
             xy[i] = p
@@ -251,6 +315,7 @@ def fill_gaps(video_path, anchors, pos, tpl):
                 if not ev[g - first]:
                     xy[g - first] = pa + (g - a) / (f - a) * (q - pa)
             a, pa = f, q.copy()
+            va = vb = (pos[b] - pa) / (b - a)
     cap.release()
     return xy, ev
 
@@ -271,7 +336,7 @@ def track_watermark(video_path, ocr_data):
     if len(anchors) < MIN_ANCHORS:
         return {"found": False,
                 "reason": f"'{wm['text']}': chỉ {len(anchors)} mốc chắc (cần ≥ {MIN_ANCHORS})"}, None
-    xy, ev = fill_gaps(video_path, anchors, pos, tpl)
+    xy, ev = fill_gaps(video_path, anchors, pos, tpl, ocr_data["fps"])
     return {"found": True, "text": wm["text"], "size": [int(tpl.shape[1]), int(tpl.shape[0])],
             "total_frames": int(ocr_data["total_frames"]), "fps": float(ocr_data["fps"]),
             "start": int(anchors[0]), "xy": [[int(round(x)), int(round(y))] for x, y in xy],

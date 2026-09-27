@@ -6,6 +6,8 @@ import numpy as np
 FPS, N, W, H = 25.0, 240, 480, 270
 FAINT = range(40, 80)      # đoạn gần như vô hình (độ mờ 0.08), nằm trên đoạn thẳng
 TURN = 150                 # đổi hướng (lúc watermark còn rõ)
+DISTRACT = range(45, 76)   # vật giống hệt chữ nhưng ĐỨNG YÊN, lúc watermark thật đang mờ (chỉ khi distractor=True)
+DISTRACT_AT = (400, 220)
 
 
 def truth(t):
@@ -28,8 +30,8 @@ def glyph():
     return edge[sl].astype(np.float32) / 255, fill[sl].astype(np.float32) / 255
 
 
-def make_video(path):
-    """Ghi video mp4v; trả về (tâm thật từng frame, (rộng, cao) của chữ)."""
+def make_video(path, distractor=False):
+    """Ghi video mp4v; trả về (tâm thật từng frame, (rộng, cao) của chữ). distractor=True: thêm vật giống chữ đứng yên."""
     rng = np.random.default_rng(0)
     tex = cv2.GaussianBlur(rng.integers(0, 256, (H + 40, W + N + 40)).astype(np.float32), (0, 0), 2)
     tex = cv2.normalize(tex, None, 40, 200, cv2.NORM_MINMAX)
@@ -41,6 +43,10 @@ def make_video(path):
     for t in range(N):
         bg = tex[20:20 + H, t:t + W].copy()           # nền trôi 1 px/frame
         bg[10:80, 330:470] = 200.0                    # mảng trơn
+        if distractor and t in DISTRACT:
+            dx0, dy0 = int(DISTRACT_AT[0] - gw / 2), int(DISTRACT_AT[1] - gh / 2)
+            droi = bg[dy0:dy0 + gh, dx0:dx0 + gw]
+            bg[dy0:dy0 + gh, dx0:dx0 + gw] = (1 - 0.6 * edge) * droi + 0.6 * edge * ov
         c = truth(t)
         x0, y0 = int(round(c[0] - gw / 2)), int(round(c[1] - gh / 2))
         a = (0.08 if t in FAINT else 0.6) * edge

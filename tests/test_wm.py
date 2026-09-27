@@ -118,6 +118,29 @@ def test_track_reports_reason_when_no_watermark():
         shutil.rmtree(d, ignore_errors=True)
 
 
+def test_track_ignores_static_lookalike_while_watermark_is_faint():
+    # Lỗi thật trên newvideo: một vật đứng yên khớp mẫu (chữ tĩnh) được nhận làm mốc vì "tự nhất quán"
+    d = tempfile.mkdtemp()
+    try:
+        path = os.path.join(d, "synth.mp4")
+        centers, size = wm_synth.make_video(path, distractor=True)
+        res, _ = wm_track.track_watermark(path, wm_synth.fake_ocr(centers, size, "synth.mp4"))
+        xy = np.array(res["xy"], float)
+        frames = np.arange(res["start"], res["start"] + len(xy))
+        err = np.hypot(*(xy - centers[frames]).T)
+        assert err.max() <= 8, f"bám nhảy sang vật đứng yên: lệch {err.max():.0f}px ở {int((err > 8).sum())} frame"
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_hermite_follows_curve_and_is_linear_on_chord():
+    pa, pb = np.array([0.0, 0.0]), np.array([100.0, 100.0])
+    # đường y = x²/100 (x = frame): vận tốc đầu (1, 0), cuối (1, 2) → Hermite bậc 3 tái tạo đúng parabol
+    assert np.allclose(wm_track._hermite(pa, np.array([1.0, 0.0]), pb, np.array([1.0, 2.0]), 0, 100, 50), [50, 25])
+    chord = (pb - pa) / 100
+    assert np.allclose(wm_track._hermite(pa, chord, pb, chord, 0, 100, 30), [30, 30]), "vận tốc = dây cung → thẳng"
+
+
 def test_run_writes_track_mask_preview_and_can_be_disabled():
     d = tempfile.mkdtemp(prefix="wm 修仙 ")
     orig = (jobs.JOBS_DIR, wm_track.WM_TRACK)
