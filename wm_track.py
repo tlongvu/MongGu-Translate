@@ -5,8 +5,9 @@ Watermark chạy = chữ ID nhỏ bán trong suốt trôi khắp khung hình (vd
 OCR chỉ đọc được nó ở vài % số frame → render cũ xóa lúc có lúc không (nhấp nháy). Bước này:
   1. tự nhận chữ watermark từ ocr_data: có mặt suốt video, vị trí tản rộng, cỡ box không đổi;
   2. dựng mẫu nét chữ (trung vị gradient các lần OCR đọc đủ, đã căn) + mask hình nét chữ;
-  3. dò mẫu trên toàn khung MỌI frame → mốc chắc (điểm cao + nhất quán với láng giềng);
-  4. lấp khoảng giữa các mốc: nội suy thẳng + dò lại tại chỗ; lệch khỏi đường thẳng → chỗ đổi hướng.
+  3. dò mẫu trên toàn khung MỌI frame → nối đỉnh thành đoạn quỹ đạo → mốc = chuỗi đoạn dài nhất nối được bằng
+     chuyển động khả thi (chữ tĩnh khớp nhầm thành đoạn riêng, không nối được → bị bỏ);
+  4. lấp khoảng giữa các mốc: nội suy Hermite (khớp vận tốc 2 đầu) + dò lại tại chỗ; lệch → chỗ đổi hướng.
 Ra: jobs/<tên>/wm_track.json (vị trí từng frame), wm_mask.png, wm_preview.png. Render đọc để xóa ở mọi frame.
 
 Chạy tay:  python wm_track.py --input video.mp4     (cần OCR trước)

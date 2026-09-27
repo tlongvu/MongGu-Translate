@@ -90,12 +90,16 @@ Số liệu chốt ngưỡng:
 1. **Dò toàn khung** mọi frame, ở nửa độ phân giải: `matchTemplate(TM_CCOEFF_NORMED)` trên gradient.
    - **Cổng năng lượng:** vị trí có gradient trung bình trong cửa sổ < 35% của mẫu thì bị loại, vì vùng trơn làm NCC khuếch đại nhiễu.
    - Ghi lại đỉnh tốt nhất và điểm.
-2. **Mốc chắc** = điểm ≥ 0,45 **và** có ≥ 3 đỉnh chắc khác trong ±1 s nằm trong tầm di chuyển (≤ 100 px/s + 6 px). Mốc được chỉnh lại ở full-res (±6 px). Có dưới 20 mốc thì bỏ qua, kèm cảnh báo.
+2. **Mốc** (sửa sau kiểm thật, xem mục 10):
+   - **nối đoạn quỹ đạo:** mọi đỉnh ≥ 0,30 được nối vào đoạn đang mở gần nhất mà nó với tới được (cách ≤ 1 s, dời ≤ 100 px/s + 6 px). Nhiều đoạn sống song song được;
+   - **chỉ giữ đoạn** có ≥ 3 đỉnh và ít nhất 1 đỉnh chắc (≥ 0,45);
+   - **chuỗi dài nhất:** chọn chuỗi đoạn nối được với nhau bằng chuyển động khả thi, có tổng số đỉnh lớn nhất. Mốc = các đỉnh của chuỗi. Chữ tĩnh khớp nhầm thành đoạn riêng, không nối được vào quỹ đạo watermark nên bị bỏ. Watermark dừng thật (đoạn cuối `newvideo`, điểm 0,81) vẫn nối được nên được giữ;
+   - mốc được chỉnh lại ở full-res (±6 px). Có dưới 20 mốc thì bỏ qua, kèm cảnh báo.
 3. **Khoảng giữa 2 mốc liên tiếp:**
-   - nội suy thẳng, rồi dò lại quanh điểm nội suy ở full-res (±24 px);
-   - điểm ≥ 0,30 thì lấy vị trí dò được (có bằng chứng);
-   - nếu vị trí đó lệch khỏi đường thẳng > 8 px thì đó là chỗ đổi hướng: nó thành mốc mới. Các frame **nội suy** giữa mốc trước và mốc mới được nội suy lại theo đoạn thẳng mới (không cần đọc lại ảnh); frame có bằng chứng giữ nguyên;
-   - còn lại giữ vị trí nội suy (không có bằng chứng).
+   - dự đoán bằng **nội suy Hermite**: khớp vị trí và vận tốc 2 đầu, vận tốc = hệ số góc các mốc trong 1 s quanh mỗi đầu (các mốc đó phải trải ≥ 0,5 s, không thì dùng dây cung → thành nội suy thẳng);
+   - rồi dò lại quanh điểm dự đoán ở full-res (±24 px). Điểm ≥ 0,30 thì lấy vị trí dò được (có bằng chứng);
+   - nếu vị trí đó lệch khỏi đường dự đoán > 8 px thì đó là chỗ đổi hướng: nó thành mốc mới. Các frame **nội suy** giữa mốc trước và mốc mới được nội suy lại thẳng (không cần đọc lại ảnh), phần sau đi thẳng tới mốc kế; frame có bằng chứng giữ nguyên;
+   - còn lại giữ vị trí dự đoán (không có bằng chứng).
 4. Chỉ bám trong `[mốc đầu, mốc cuối]`, không đoán ra ngoài.
 5. **Bộ nhớ:** đọc video tuần tự 2 lượt (dò toàn khung, rồi lấp khoảng). Không giữ ảnh trong RAM, chỉ giữ vị trí và điểm của mỗi frame.
 6. **Thời gian đo trên bản nháp** (cùng code với plan): 71 s cho `newvideo` 132 s, tức khoảng 0,55× thời lượng video. Video 30 phút mất khoảng 16 phút.
@@ -174,3 +178,13 @@ Dữ liệu thật:
 - Test cũ và mới đều qua.
 - Các kiểm chứng dữ liệu thật ở mục 6 đạt, và user đã xem ảnh trước/sau.
 - Mỗi task trong plan là một commit trên `nang-cap`.
+
+## 10. Kiểm thật lần 1 → sửa (Task 3b) → giới hạn còn lại
+
+**Kiểm thật lần 1.** Code đúng plan đạt tiêu chí số: 19 mốc OCR, lệch ≤ 7,8 px. Nhưng soi ảnh thì thấy 2 lỗi mà các mốc đó không lộ ra, vì chúng đều nằm từ giây 21 trở đi:
+1. **Khóa nhầm vật đứng yên.** Ở frame 472–575, một cụm đỉnh đứng yên (điểm 0,46, cạnh nhãn "*女主内心") được nhận làm mốc vì "tự nhất quán". Hậu quả là xóa sai chỗ và để sót watermark thật.
+2. **Nội suy thẳng qua đoạn cong.** Frame 194–396 là 8 giây không có bằng chứng; ở frame 300 lệch khoảng 60 px.
+
+**Sửa:** chuỗi đoạn quỹ đạo và nội suy Hermite (mục 4.3). Test mới dùng video tổng hợp có vật giống chữ đứng yên: code cũ lệch 297 px ở 40 frame, code mới lệch ≤ 2,2 px.
+
+**Giới hạn còn lại.** Trong khoảng hụt rất dài mà watermark mờ tới mức khớp mẫu không phân biệt được với nhiễu, vị trí chỉ là đoán. Ví dụ `newvideo` frame 606–1019 (16,5 s, chỉ 4 frame có bằng chứng): ở frame 835 chữ còn thấy lờ mờ, nhưng điểm khớp tại chỗ thật chỉ 0,25, là đỉnh thứ 5, thấp hơn nhiễu 0,29–0,34. Ở những đoạn đó có thể còn thấy watermark mờ, kèm vết nhòe gần đó. Muốn hơn nữa phải đổi tín hiệu dò (ví dụ tách lớp alpha nhiều frame) — việc riêng, chỉ làm khi user thấy cần.
