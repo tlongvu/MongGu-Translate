@@ -176,6 +176,23 @@ def test_load_wm_track_ignores_missing_or_stale():
         shutil.rmtree(d, ignore_errors=True)
 
 
+def test_optional_step_failure_does_not_stop_pipeline():
+    import pipeline
+    d = tempfile.mkdtemp()
+    try:
+        bad = os.path.join(d, "fail.py")
+        with open(bad, "w", encoding="utf-8") as f:
+            f.write("import sys; sys.exit(3)")
+        pipeline.run_step("thử", bad, [], required=False)     # không thoát
+        try:
+            pipeline.run_step("thử", bad, [])
+            raise AssertionError("bước bắt buộc lỗi phải dừng pipeline")
+        except SystemExit as e:
+            assert e.code == 3
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     passed = 0
