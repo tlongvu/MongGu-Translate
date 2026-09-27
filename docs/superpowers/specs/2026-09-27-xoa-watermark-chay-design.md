@@ -60,7 +60,7 @@ Hằng số đặt ở đầu file, không đưa vào config (không cần chỉ
 ### 4.1 Tự nhận watermark chạy (từ `ocr_data`)
 
 Gom các lần OCR theo chữ (bỏ khoảng trắng). Chữ là **ứng viên** khi thỏa tất cả:
-- dài ≥ 4 ký tự và xuất hiện ≥ 10 lần;
+- dài ≥ 3 ký tự và xuất hiện ≥ 10 lần. Lúc đầu đặt 4; hạ xuống 3 vì kênh "粥咪咪" (video Douyin 36 phút). Hạ xuống 3 (thậm chí 2) không đổi kết quả trên hihi và newvideo: vẫn chỉ watermark thật đạt ngưỡng;
 - **có mặt ≥ 40% số đoạn 10 giây** của video;
 - tâm box tản ≥ 5% đường chéo khung (độ lệch chuẩn 2 chiều; ≈ 90 px ở 1440×1080);
 - bề rộng box ổn định (hệ số biến thiên ≤ 0,15).

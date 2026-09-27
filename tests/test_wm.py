@@ -63,7 +63,8 @@ def test_find_moving_wm_each_threshold_excludes_on_its_own():
         return _ocr(fd)
     assert wm_track.find_moving_wm(moving("原创@哈加密", 10))["text"] == "原创@哈加密", "vừa đủ 10 lần đọc"
     assert wm_track.find_moving_wm(moving("原创@哈加密", 9)) is None, "< 10 lần đọc"
-    assert wm_track.find_moving_wm(moving("哈加密", 150)) is None, "chữ < 4 ký tự"
+    assert wm_track.find_moving_wm(moving("粥咪咪", 150))["text"] == "粥咪咪", "watermark 3 ký tự (kênh 粥咪咪) phải nhận được"
+    assert wm_track.find_moving_wm(moving("粥咪", 150)) is None, "chữ < 3 ký tự"
     assert wm_track.find_moving_wm(moving("原创@哈加密", 150, width=lambda f: 100 + (f % 7) * 40)) is None, \
         "cỡ box dao động > 15%"
     early = defaultdict(list)

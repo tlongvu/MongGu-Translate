@@ -32,7 +32,7 @@ from jobs import JobError, open_job, working_video
 from utils import imwrite_any, write_json_atomic
 
 # ── Tự nhận watermark chạy (số liệu chốt ngưỡng: spec 2026-09-27 mục 4.1) ──
-MIN_TEXT_LEN = 4          # chữ watermark ≥ 4 ký tự
+MIN_TEXT_LEN = 3          # chữ watermark ≥ 3 ký tự (kênh "粥咪咪"); ngắn hơn dễ trùng nhãn tên nhân vật
 MIN_READS = 10            # xuất hiện ≥ 10 lần trong ocr_data
 MIN_PRESENCE = 0.40       # có mặt ≥ 40% số đoạn 10 giây (watermark 57–78%; nhãn nhân vật ≤ 21%)
 MIN_SPREAD_FRAC = 0.05    # tâm box tản ≥ 5% đường chéo khung (watermark tĩnh tản 4–6 px)
