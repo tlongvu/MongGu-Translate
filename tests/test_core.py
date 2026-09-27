@@ -433,7 +433,7 @@ def test_run_translation_rerun_is_free_and_keeps_edits():
 
 # ── Ghi JSON an toàn (utils) ──
 
-def _run_ocr_with_fakes(fail_ocr_at=None, fail_read_at=None):
+def _run_ocr_with_fakes(fail_ocr_at=None, fail_read_at=None, d=None, max_scans=None, no_text=False):
     """Chạy op.run_ocr_pass trên video tổng hợp (tests/wm_synth) với PaddleOCR giả (không cần paddle):
     OCR giả trả 1 dòng chữ mỗi frame; fail_ocr_at: frame OCR ném lỗi (như hết RAM); fail_read_at: từ frame này
     cap.read() thất bại giữa video. → (kết quả run_ocr_pass, ocr_data đã ghi, thư mục tạm để dọn)."""
@@ -441,9 +441,11 @@ def _run_ocr_with_fakes(fail_ocr_at=None, fail_read_at=None):
     import cv2
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     import wm_synth
-    d = tempfile.mkdtemp()
+    fresh = d is None
+    d = d or tempfile.mkdtemp()
     video = os.path.join(d, "clip.mp4")
-    wm_synth.make_video(video)
+    if fresh:
+        wm_synth.make_video(video)
     fake_paddle = types.ModuleType("paddle")
     fake_paddle.device = types.SimpleNamespace(is_compiled_with_cuda=lambda: False)
     fake_paddleocr = types.ModuleType("paddleocr")
@@ -469,6 +471,8 @@ def _run_ocr_with_fakes(fail_ocr_at=None, fail_read_at=None):
         fake_ocr_frame.calls += 1
         if fail_ocr_at is not None and n == fail_ocr_at:
             raise RuntimeError("could not create a primitive")
+        if no_text:
+            return []
         return [{"text": "你好世界", "box": [[10, 10], [90, 10], [90, 40], [10, 40]], "confidence": 0.99}]
     fake_ocr_frame.calls = 0
     orig_dirs = (jobs.JOBS_DIR, jobs.SERIES_DIR)
@@ -476,7 +480,7 @@ def _run_ocr_with_fakes(fail_ocr_at=None, fail_read_at=None):
         sys.modules["paddle"], sys.modules["paddleocr"] = fake_paddle, fake_paddleocr
         cv2.VideoCapture, op.ocr_frame = _Cap, fake_ocr_frame
         jobs.JOBS_DIR, jobs.SERIES_DIR = os.path.join(d, "jobs"), os.path.join(d, "series")
-        result = op.run_ocr_pass(video, test_mode=False, test_frames=0)
+        result = op.run_ocr_pass(video, test_mode=False, test_frames=0, max_scans=max_scans)
         with open(jobs.open_job(video).ocr_data, encoding="utf-8") as f:
             data = json.load(f)
     finally:
@@ -494,7 +498,7 @@ def test_ocr_error_mid_video_is_not_recorded_as_no_text():
     # Video Douyin 36 phút: OCR lỗi vì hết RAM ở vài frame bị ghi là "không có chữ" rồi vẫn báo xong → mất chữ im lặng
     result, data, d = _run_ocr_with_fakes(fail_ocr_at=60)
     try:
-        assert result is None, "OCR lỗi giữa chừng phải báo thất bại (mã 1)"
+        assert result == op.NEXT, "OCR lỗi giữa chừng (vd hết RAM): lưu tiến trình, báo chạy tiếp bằng tiến trình mới"
         assert data["complete"] is False, "dữ liệu dở dang phải complete=False để chạy tiếp / dịch từ chối"
         # lần gọi OCR thứ 60 lỗi (khoảng frame 180 vì frame trùng được bỏ qua): chỉ giữ 60 lần OCR trước đó,
         # bỏ cả kết quả các frame sau đã nằm sẵn trong hàng đợi — chạy lại phải quét lại từ frame lỗi
@@ -507,7 +511,7 @@ def test_ocr_read_failure_mid_video_is_not_end_of_video():
     # Hết RAM làm cap.read() thất bại ở frame ~29.600/54.606 → vòng đọc tưởng hết video → complete=True, mất 46% cuối
     result, data, d = _run_ocr_with_fakes(fail_read_at=100)
     try:
-        assert result is None and data["complete"] is False, "đọc hỏng giữa video không phải hết video"
+        assert result == op.NEXT and data["complete"] is False, "đọc hỏng giữa video không phải hết video"
     finally:
         shutil.rmtree(d, ignore_errors=True)
 
@@ -520,6 +524,54 @@ def test_ocr_fake_run_completes_normally():
         assert max(int(k) for k in data["frame_detections"]) >= 200
     finally:
         shutil.rmtree(d, ignore_errors=True)
+
+
+def test_ocr_in_chunks_equals_one_run():
+    # PaddleOCR rò ~4 MB/frame trong tiến trình → OCR theo đợt (mỗi đợt một tiến trình); ghép lại phải y như chạy một mạch
+    one, data_one, d1 = _run_ocr_with_fakes()
+    d2 = None
+    try:
+        for _ in range(40):
+            result, data, d2 = _run_ocr_with_fakes(d=d2, max_scans=15)
+            if result != op.NEXT:
+                break
+        assert result is not None and result != op.NEXT and data["complete"] is True
+        # keyframe có thể lệch chút (trạng thái "bỏ frame trùng" bắt đầu lại mỗi đợt) — thứ dùng về sau là segment
+        a, b = data["text_segments"], data_one["text_segments"]
+        tol = int(op.OCR_MAX_SKIP_SEC * 25) + 1          # mép segment lệch tối đa một bước "bỏ frame trùng"
+        assert len(a) == len(b) and all(x["text"] == y["text"] and abs(x["start_frame"] - y["start_frame"]) <= tol
+                                        and abs(x["end_frame"] - y["end_frame"]) <= tol for x, y in zip(a, b)),             ("ghép các đợt phải cho cùng segment như chạy một mạch", a, b)
+        assert data["scanned_until"] == data["total_frames"]
+    finally:
+        shutil.rmtree(d1, ignore_errors=True)
+        if d2:
+            shutil.rmtree(d2, ignore_errors=True)
+
+
+def test_ocr_chunks_advance_through_stretch_without_text():
+    # Chạy tiếp từng dựa vào "frame có chữ cuối cùng" → đoạn dài không chữ làm đợt sau bắt đầu lại chỗ cũ, lặp mãi
+    d = None
+    try:
+        for n in range(40):
+            result, data, d = _run_ocr_with_fakes(d=d, max_scans=15, no_text=True)
+            if result != op.NEXT:
+                break
+        assert result is not None and result != op.NEXT and data["complete"] is True, f"kẹt sau {n + 1} đợt"
+    finally:
+        if d:
+            shutil.rmtree(d, ignore_errors=True)
+
+
+def test_run_in_chunks_restarts_until_done_and_stops_when_stalled():
+    calls = []
+    codes = iter([op.EXIT_NEXT_CHUNK, op.EXIT_NEXT_CHUNK, 0])
+    progress = iter([0, 100, 200, 300])
+    assert op.run_in_chunks(["x"], lambda: next(progress), run=lambda argv: calls.append(argv) or next(codes)) == 0
+    assert len(calls) == 3, "chạy con mới tới khi xong"
+    assert op.run_in_chunks(["x"], lambda: 0, run=lambda argv: 1) == 1, "lỗi hẳn (mã 1) → dừng ngay"
+    stalled = []
+    rc = op.run_in_chunks(["x"], lambda: 50, run=lambda argv: stalled.append(1) or op.EXIT_NEXT_CHUNK)
+    assert rc == 1 and len(stalled) == 2, "không tiến thêm frame nào 2 lần liền → dừng, không lặp mãi"
 
 
 def test_write_json_atomic_keeps_old_file_on_error():

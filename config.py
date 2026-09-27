@@ -27,6 +27,10 @@ TARGET_FPS = 25                 # Convert video về fps này trước OCR (0 = 
 OCR_CONFIDENCE_THRESHOLD = 0.70  # Lọc text có confidence thấp
 OCR_RESIZE_FACTOR = 0.5         # Downscale trước khi OCR (tăng tốc CPU)
 CROP_TOP_RATIO = 0.0            # 0.0 = scan toàn bộ frame
+# PaddleOCR (paddle 2.6 CPU) rò ~4 MB mỗi frame OCR và không trả lại trong tiến trình (đo: +1,76 GB / 400 frame;
+# tạo lại engine cũng không trả) → OCR theo đợt: mỗi tiến trình con quét tối đa chừng này frame rồi lưu + thoát,
+# tiến trình mới chạy tiếp với RAM sạch (~3 GB đỉnh). Máy còn nhiều RAM trống có thể tăng.
+OCR_CHUNK_SCANS = 600
 
 # ── Scene-diff skip: bỏ qua OCR các frame gần như giống hệt frame trước ──
 # Phụ đề thường đứng yên 1-3s → không cần OCR lại 25-75 lần cho cùng 1 câu.

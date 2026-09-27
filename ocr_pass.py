@@ -36,10 +36,13 @@ from config import (
     OCR_RESIZE_FACTOR, CROP_TOP_RATIO, WATERMARK_PATTERNS,
     SUPPRESS_TEXTS, TARGET_FPS,
     USE_GPU,
-    OCR_SCENE_DIFF, OCR_SCENE_DIFF_THRESHOLD, OCR_SCENE_DIFF_WIDTH, OCR_MAX_SKIP_SEC,
+    OCR_SCENE_DIFF, OCR_SCENE_DIFF_THRESHOLD, OCR_SCENE_DIFF_WIDTH, OCR_MAX_SKIP_SEC, OCR_CHUNK_SCANS,
 )
 from utils import write_json_atomic
 from jobs import open_job, JobError
+
+NEXT = "next"          # run_ocr_pass: chưa xong nhưng đã lưu tiến trình → chạy tiếp bằng tiến trình mới
+EXIT_NEXT_CHUNK = 3     # mã thoát của tiến trình con cho trường hợp đó
 
 
 def calculate_iou(boxA, boxB):
@@ -323,7 +326,7 @@ def convert_video_fps(input_path: str, target_fps: int, out_dir: str) -> str:
     return converted_path
 
 
-def _save_intermediate_checkpoint(data_path, test_mode, video_path, original_video_path, fps, width, height, total_frames, ocr_interval_frames, unique_texts, frame_detections):
+def _save_intermediate_checkpoint(data_path, test_mode, video_path, original_video_path, fps, width, height, total_frames, ocr_interval_frames, unique_texts, frame_detections, scanned_until):
     """Lưu tiến trình OCR tạm thời (complete=False → dịch/render từ chối dùng)."""
     try:
         temp_segments = build_text_segments(frame_detections, fps, ocr_interval_frames)
@@ -336,6 +339,7 @@ def _save_intermediate_checkpoint(data_path, test_mode, video_path, original_vid
             "total_frames": total_frames,
             "ocr_interval_frames": ocr_interval_frames,
             "complete": False,
+            "scanned_until": scanned_until,
             "test_mode": test_mode,
             "unique_texts": unique_texts,
             "frame_detections": frame_detections,
@@ -347,10 +351,13 @@ def _save_intermediate_checkpoint(data_path, test_mode, video_path, original_vid
         print(f"\n  [WARN] Không thể lưu checkpoint: {e}")
 
 
-def run_ocr_pass(video_path: str, test_mode: bool = False, test_frames: int = 300, series: str = None):
+def run_ocr_pass(video_path: str, test_mode: bool = False, test_frames: int = 300, series: str = None,
+                 max_scans: int = None):
     """
     Pass 1: OCR toàn bộ video, thu thập text + vị trí.
-    Output: jobs/<tên>/ocr_data.json. Trả về ocr_data, hoặc None nếu không mở được video / bị Ctrl+C.
+    Output: jobs/<tên>/ocr_data.json. Trả về ocr_data khi xong; NEXT khi đã lưu tiến trình và cần chạy tiếp bằng
+    tiến trình mới (hết đợt max_scans frame, hoặc OCR / đọc frame lỗi giữa chừng — thường do hết RAM);
+    None nếu không mở được video / job / bị Ctrl+C.
     """
     print("=" * 55)
     print("  Monggu Translate - Pass 1: OCR Scan")
@@ -446,8 +453,11 @@ def run_ocr_pass(video_path: str, test_mode: bool = False, test_frames: int = 30
                 seen_texts = set(unique_texts)
                 
                 scanned_frames = [int(k) for k in frame_detections.keys()]
-                if scanned_frames:
-                    start_frame = max(scanned_frames) + ocr_interval_frames
+                # scanned_until: đã quét hết mọi frame trước nó (kể cả frame không chữ) → đoạn dài không chữ
+                # không làm lần chạy sau bắt đầu lại chỗ cũ
+                start_frame = max(int(old_data.get("scanned_until", 0)),
+                                  (max(scanned_frames) + ocr_interval_frames) if scanned_frames else 0)
+                if start_frame:
                     print(f"  [RESUME] Phát hiện tiến trình cũ. Sẽ tiếp tục từ frame {start_frame}/{total_frames}...")
         except Exception as e:
             print(f"  [WARN] Không đọc được checkpoint cũ, bắt đầu mới: {e}")
@@ -502,6 +512,8 @@ def run_ocr_pass(video_path: str, test_mode: bool = False, test_frames: int = 30
     interrupted = False
     ocr_failed = []    # frame OCR lỗi (vd hết RAM)
     read_failed = None  # frame đọc hỏng giữa video (không phải hết video)
+    chunk_full = False  # đã quét đủ max_scans frame trong đợt này
+    done_until = frame_idx  # mọi frame < mốc này đã có kết quả (1 worker xử lý theo thứ tự)
 
     # ── Scene-diff state: bỏ qua các frame gần như giống hệt frame OCR gần nhất ──
     # Giới hạn skip tối đa để keyframe vẫn đủ dày, segment không bị đứt đoạn.
@@ -514,7 +526,7 @@ def run_ocr_pass(video_path: str, test_mode: bool = False, test_frames: int = 30
 
     def collect_results(blocking: bool = False):
         """Thu thập kết quả từ result_q (non-blocking hoặc blocking cho tất cả)."""
-        nonlocal ocr_count, collected
+        nonlocal ocr_count, collected, done_until
         while True:
             try:
                 timeout = None if blocking and collected < submitted else 0
@@ -523,6 +535,7 @@ def run_ocr_pass(video_path: str, test_mode: bool = False, test_frames: int = 30
                 if dets is None:
                     ocr_failed.append(fidx)
                     continue
+                done_until = max(done_until, fidx + 1)
                 if dets:
                     frame_detections[str(fidx)] = dets
                     ocr_count += 1
@@ -582,6 +595,10 @@ def run_ocr_pass(video_path: str, test_mode: bool = False, test_frames: int = 30
                       f"| {elapsed:.0f}s | ETA {eta:.0f}s "
                       f"| OCR scans: {ocr_count} | Unique texts: {len(unique_texts)}")
 
+            if max_scans and submitted >= max_scans:   # hết đợt: lưu và để tiến trình mới (RAM sạch) chạy tiếp
+                chunk_full = True
+                break
+
             # Tự động lưu tiến trình sau mỗi 1000 frame thực sự OCR trong phiên này.
             # (Không dùng `submitted % 1000`: frame bị scene-diff bỏ qua giữ nguyên submitted → lưu lặp file 24MB.)
             if submitted - last_ckpt_submitted >= 1000:
@@ -590,7 +607,7 @@ def run_ocr_pass(video_path: str, test_mode: bool = False, test_frames: int = 30
                 _save_intermediate_checkpoint(
                     data_path, test_mode,
                     video_path, original_video_path, fps, width, height, total_frames,
-                    ocr_interval_frames, unique_texts, frame_detections
+                    ocr_interval_frames, unique_texts, frame_detections, done_until
                 )
     except KeyboardInterrupt:
         print("\n\n  [INFO] Nhận thấy Ctrl+C! Đang dừng các worker threads và lưu tiến trình...")
@@ -613,9 +630,13 @@ def run_ocr_pass(video_path: str, test_mode: bool = False, test_frames: int = 30
         for k in [k for k in frame_detections if int(k) >= failed_at]:
             del frame_detections[k]
         print(f"\n  [ERROR] OCR dừng ở frame {failed_at}/{total_frames}: "
-              f"{'OCR lỗi' if ocr_failed else 'không đọc được frame'} (thường do thiếu RAM — đóng bớt ứng dụng).")
-        interrupted = True
-        frame_idx = failed_at
+              f"{'OCR lỗi' if ocr_failed else 'không đọc được frame'} (thường do thiếu RAM) — "
+              f"đã lưu, chạy tiếp bằng tiến trình mới.")
+    # Đã quét hết mọi frame trước mốc này. Hết đợt / Ctrl+C: mọi frame đã đẩy vào hàng đợi đều đã có kết quả (join)
+    # và frame bị bỏ qua vì trùng cũng tính là đã quét → frame_idx.
+    scanned_until = failed_at if failed_at is not None else (
+        frame_idx if (chunk_full or interrupted) else total_frames)
+    unfinished = interrupted or chunk_full or failed_at is not None
 
     elapsed = time.time() - t0
 
@@ -638,7 +659,8 @@ def run_ocr_pass(video_path: str, test_mode: bool = False, test_frames: int = 30
         "height": height,
         "total_frames": total_frames,
         "ocr_interval_frames": ocr_interval_frames,
-        "complete": not interrupted,
+        "complete": not unfinished,
+        "scanned_until": scanned_until,
         "test_mode": test_mode,
         "unique_texts": unique_texts,
         "frame_detections": frame_detections,
@@ -647,13 +669,16 @@ def run_ocr_pass(video_path: str, test_mode: bool = False, test_frames: int = 30
 
     write_json_atomic(data_path, ocr_data)
 
+    if unfinished and not interrupted:   # hết đợt hoặc lỗi giữa chừng: tiến trình mới (RAM sạch) chạy tiếp
+        print(f"\n  [ĐỢT] Đã lưu tới frame {scanned_until}/{total_frames} ({ocr_count} frame có chữ) — chạy tiếp...")
+        return NEXT
     if interrupted:
         print(f"\n{'=' * 55}")
         print(f"  ĐÃ LƯU TIẾN TRÌNH BỊ NGẮT QUÃNG!")
         print(f"  Frames scanned: {ocr_count} (Tổng cộng: {len(frame_detections)})")
         print(f"  Unique texts  : {len(unique_texts)}")
         print(f"  Output        : {data_path}")
-        print(f"  Bạn có thể chạy lại script để tiếp tục quét từ frame {frame_idx}.")
+        print(f"  Bạn có thể chạy lại script để tiếp tục quét từ frame {scanned_until}.")
         print(f"{'=' * 55}")
         return None  # Chưa xong → báo lỗi để pipeline không chạy tiếp với dữ liệu dở dang
     else:
@@ -671,12 +696,44 @@ def run_ocr_pass(video_path: str, test_mode: bool = False, test_frames: int = 30
     return ocr_data
 
 
+def _scanned_until(video_path: str, series: str) -> int:
+    """Đã quét tới frame nào (theo ocr_data của job); 0 nếu chưa có."""
+    try:
+        with open(open_job(video_path, series, create=True).ocr_data, encoding="utf-8") as f:
+            return int(json.load(f).get("scanned_until", 0))
+    except (JobError, OSError, ValueError):
+        return 0
+
+
+def run_in_chunks(child_argv, progress, run=subprocess.call, max_stalls=2) -> int:
+    """PaddleOCR rò ~4 MB mỗi frame OCR và không trả lại trong tiến trình → OCR từng đợt, mỗi đợt một tiến trình
+    con (child_argv): con thoát EXIT_NEXT_CHUNK (hết đợt / lỗi giữa chừng, đã lưu) → chạy con mới với RAM sạch.
+    Con xong (0) hoặc lỗi hẳn (1) → trả mã đó. Con chết bất thường (crash) cũng chạy lại. progress(): đã quét tới
+    frame nào — max_stalls lần liền không tiến thêm (lỗi cố định ở một frame) thì dừng, không lặp mãi."""
+    last, stalls = progress(), 0
+    while True:
+        rc = run(child_argv)
+        if rc in (0, 1):
+            return rc
+        now = progress()
+        stalls = stalls + 1 if now <= last else 0
+        if stalls >= max_stalls:
+            print(f"  [ERROR] OCR không quét thêm được frame nào sau {max_stalls} lần chạy lại (dừng ở frame {now}).")
+            return 1
+        last = now
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Monggu Translate - OCR Pass")
     parser.add_argument("--input", "-i", type=str, default=VIDEO_PATH, help="Đường dẫn video")
     parser.add_argument("--test", action="store_true", default=TEST_MODE, help="Test mode (giới hạn frames)")
     parser.add_argument("--series", "-s", type=str, default=None, help="Tên bộ (series) nếu video là một tập")
+    parser.add_argument("--chunk", action="store_true", help=argparse.SUPPRESS)   # tiến trình con: một đợt
     args = parser.parse_args()
 
-    result = run_ocr_pass(args.input, test_mode=args.test, test_frames=TEST_FRAMES, series=args.series)
-    sys.exit(0 if result else 1)
+    if args.chunk:
+        result = run_ocr_pass(args.input, test_mode=args.test, test_frames=TEST_FRAMES, series=args.series,
+                              max_scans=OCR_CHUNK_SCANS)
+        sys.exit(EXIT_NEXT_CHUNK if result == NEXT else (0 if result else 1))
+    sys.exit(run_in_chunks([sys.executable, os.path.abspath(__file__), *sys.argv[1:], "--chunk"],
+                           lambda: _scanned_until(args.input, args.series)))
