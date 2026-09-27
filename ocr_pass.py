@@ -484,6 +484,9 @@ def run_ocr_pass(video_path: str, test_mode: bool = False, test_frames: int = 30
             task_q.task_done()
 
     # Khởi động worker threads
+    # Stack lớn cho luồng OCR: mã C++ của Paddle (predict_rec) đôi khi tràn stack mặc định của luồng phụ trên Windows
+    # → "stack overflow / access violation" giết cả tiến trình giữa chừng (gặp ở video Douyin 36 phút, ~10-15 phút/lần).
+    threading.stack_size(64 * 1024 * 1024)
     workers = []
     for wid in range(current_num_workers):
         t = threading.Thread(target=worker_fn, args=(wid,), daemon=True)
