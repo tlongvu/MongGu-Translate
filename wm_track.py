@@ -12,11 +12,22 @@ Ra: jobs/<tên>/wm_track.json (vị trí từng frame), wm_mask.png, wm_preview.
 Chạy tay:  python wm_track.py --input video.mp4     (cần OCR trước)
 """
 
+import argparse
+import json
+import os
+import sys
 import time
 from collections import defaultdict
 
+if hasattr(sys.stdout, "reconfigure"):   # in tiếng Việt khi chạy tay trên Windows
+    sys.stdout.reconfigure(encoding="utf-8")
+
 import cv2
 import numpy as np
+
+from config import VIDEO_PATH, WM_TRACK
+from jobs import JobError, open_job, working_video
+from utils import imwrite_any, write_json_atomic
 
 # ── Tự nhận watermark chạy (số liệu chốt ngưỡng: spec 2026-09-27 mục 4.1) ──
 MIN_TEXT_LEN = 4          # chữ watermark ≥ 4 ký tự
@@ -266,3 +277,82 @@ def track_watermark(video_path, ocr_data):
             "start": int(anchors[0]), "xy": [[int(round(x)), int(round(y))] for x, y in xy],
             "evidence": "".join("1" if e else "0" for e in ev), "anchors": len(anchors),
             "seconds": round(time.time() - t0, 1)}, mask
+
+
+def write_preview(video_path, result, out_path, n=6):
+    """n frame rải đều trong khoảng bám: vùng quanh watermark + khung (xanh = có bằng chứng, vàng = nội suy)
+    → ảnh ghép 3 cột để user liếc là biết bám đúng hay sai. → False nếu không đọc được frame nào."""
+    w, h = result["size"]
+    start, xy, ev = result["start"], result["xy"], result["evidence"]
+    cw, ch = 3 * w, 5 * h
+    cap = cv2.VideoCapture(video_path)
+    tiles = []
+    for i in np.linspace(0, len(xy) - 1, n).astype(int):
+        cap.set(cv2.CAP_PROP_POS_FRAMES, start + i)
+        ok, frame = cap.read()
+        if not ok:
+            continue
+        x, y = xy[i]
+        color = (0, 200, 0) if ev[i] == "1" else (0, 220, 255)
+        cv2.rectangle(frame, (int(x - w / 2 - 4), int(y - h / 2 - 4)), (int(x + w / 2 + 4), int(y + h / 2 + 4)), color, 2)
+        big = cv2.copyMakeBorder(frame, ch, ch, cw, cw, cv2.BORDER_CONSTANT)
+        tile = big[int(y) + ch - ch // 2:int(y) + ch + ch // 2, int(x) + cw - cw // 2:int(x) + cw + cw // 2]
+        tile = cv2.resize(tile, (480, int(480 * tile.shape[0] / tile.shape[1])))
+        cv2.putText(tile, f"frame {start + i}", (8, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+        tiles.append(tile)
+    cap.release()
+    if not tiles:
+        return False
+    while len(tiles) % 3:
+        tiles.append(np.zeros_like(tiles[0]))
+    imwrite_any(out_path, np.vstack([np.hstack(tiles[k:k + 3]) for k in range(0, len(tiles), 3)]))
+    return True
+
+
+def run(video_path: str) -> int:
+    """Dò watermark chạy cho video → jobs/<tên>/wm_track.json (+ wm_mask.png, wm_preview.png).
+    Mã 0 cả khi không thấy / bỏ qua (ghi found: false + lý do); 1 khi thiếu job/OCR hoặc không mở được video."""
+    try:
+        job = open_job(video_path)
+    except JobError as e:
+        print(f"  [WM][ERROR] {e}")
+        return 1
+    if not os.path.exists(job.ocr_data):
+        print(f"  [WM][ERROR] Chưa có OCR cho {job.name} — chạy OCR trước: python ocr_pass.py --input \"{video_path}\"")
+        return 1
+    if not WM_TRACK:
+        write_json_atomic(job.wm_track, {"found": False, "reason": "tắt trong config (WM_TRACK = False)"})
+        print("  [WM] Tắt trong config (WM_TRACK = False) → không xóa watermark chạy.")
+        return 0
+    with open(job.ocr_data, encoding="utf-8") as f:
+        ocr_data = json.load(f)
+    video = working_video(job, ocr_data, video_path)
+    cap = cv2.VideoCapture(video)
+    opened = cap.isOpened()
+    cap.release()
+    if not opened:
+        print(f"  [WM][ERROR] Không mở được video: {video}")
+        return 1
+    result, mask = track_watermark(video, ocr_data)
+    if result["found"]:
+        imwrite_any(job.wm_mask, mask)          # ghi mask trước json: render thấy found thì mask đã có
+        write_preview(video, result, job.wm_preview)
+        n = len(result["xy"])
+        print(f"  [WM] Thấy watermark chạy '{result['text']}' ({result['size'][0]}×{result['size'][1]}) — "
+              f"bám {n} frame ({result['evidence'].count('1') / n:.0%} có bằng chứng, {result['anchors']} mốc), "
+              f"{result['seconds']}s")
+        print(f"  [WM] Xem nhanh vị trí bám: {job.wm_preview}")
+    else:
+        print(f"  [WM] Không xóa watermark chạy: {result['reason']}")
+    write_json_atomic(job.wm_track, result)
+    return 0
+
+
+def main():
+    ap = argparse.ArgumentParser(description="Dò watermark chạy → jobs/<tên>/wm_track.json (render dùng để xóa)")
+    ap.add_argument("--input", "-i", type=str, default=VIDEO_PATH, help="Đường dẫn video gốc")
+    sys.exit(run(ap.parse_args().input))
+
+
+if __name__ == "__main__":
+    main()

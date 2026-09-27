@@ -194,6 +194,11 @@ SUPPRESS_TEXTS = [
 AUTO_SUPPRESS_LATIN_ONLY = True
 
 # ──────────────────────────────────────────────
+# XÓA WATERMARK CHẠY (wm_track.py — pipeline tự chạy sau OCR)
+# ──────────────────────────────────────────────
+WM_TRACK = True                  # False = không dò/xóa watermark chạy (tắt cho 1 video qua MONGGU_CONFIG)
+
+# ──────────────────────────────────────────────
 # TIKTOK PASS MODE (Bypass detection)
 # ──────────────────────────────────────────────
 TIKTOK_PASS_MODE = False

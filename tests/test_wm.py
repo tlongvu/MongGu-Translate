@@ -3,6 +3,7 @@ Test xóa watermark chạy (wm_track.py + phần xóa trong render) — video t�
 Chạy:  python -m pytest tests/   hoặc   python tests/test_wm.py
 """
 
+import json
 import os
 import shutil
 import sys
@@ -15,6 +16,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import wm_track  # noqa: E402
 import wm_synth  # noqa: E402
+
+import jobs  # noqa: E402
+import utils  # noqa: E402
 
 
 def _det(text, cx, cy, w, h, conf=0.9):
@@ -109,6 +113,30 @@ def test_track_reports_reason_when_no_watermark():
         res, mask = wm_track.track_watermark(path, data)
         assert res["found"] is False and "không thấy" in res["reason"] and mask is None
     finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_run_writes_track_mask_preview_and_can_be_disabled():
+    d = tempfile.mkdtemp(prefix="wm 修仙 ")
+    orig = (jobs.JOBS_DIR, wm_track.WM_TRACK)
+    try:
+        jobs.JOBS_DIR = os.path.join(d, "jobs")
+        video = os.path.join(d, "clip wm.mp4")
+        centers, size = wm_synth.make_video(video)
+        job = jobs.open_job(video, create=True)
+        utils.write_json_atomic(job.ocr_data, wm_synth.fake_ocr(centers, size, "clip wm.mp4"))
+        assert wm_track.run(video) == 0
+        t = json.load(open(job.wm_track, encoding="utf-8"))
+        assert t["found"] and t["total_frames"] == wm_synth.N and len(t["xy"]) == len(t["evidence"])
+        assert utils.imread_gray(job.wm_mask) is not None, "mask phải ghi được (đường dẫn Unicode)"
+        assert utils.imread_gray(job.wm_preview) is not None
+        wm_track.WM_TRACK = False
+        assert wm_track.run(video) == 0
+        assert json.load(open(job.wm_track, encoding="utf-8"))["found"] is False
+        os.remove(job.ocr_data)
+        assert wm_track.run(video) == 1, "chưa có OCR → mã 1"
+    finally:
+        jobs.JOBS_DIR, wm_track.WM_TRACK = orig
         shutil.rmtree(d, ignore_errors=True)
 
 
