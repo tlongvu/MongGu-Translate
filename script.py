@@ -48,6 +48,7 @@ from config import (
     SUBTITLE_BG_PAD, SUBTITLE_BG_RADIUS,
 )
 from jobs import open_job, JobError, working_video
+from utils import imread_gray
 
 
 # ──────────────────────────────────────────────
@@ -330,6 +331,48 @@ def _inpaint_roi(roi_frame, roi_mask):
     if method == "ns":
         return cv2.inpaint(roi_frame, roi_mask, INPAINT_RADIUS, cv2.INPAINT_NS)
     return cv2.inpaint(roi_frame, roi_mask, INPAINT_RADIUS, cv2.INPAINT_TELEA)
+
+
+def remove_wm(frame, center, mask, pad=10):
+    """Xóa watermark chạy: đặt mask (tâm = center) lên frame rồi inpaint theo INPAINT_METHOD.
+    ROI rộng hơn mask `pad` px để inpaint có ngữ cảnh; mask sát / lố mép khung thì xén. Sửa frame tại chỗ."""
+    mh, mw = mask.shape
+    fh, fw = frame.shape[:2]
+    x0, y0 = int(round(center[0] - mw / 2)), int(round(center[1] - mh / 2))
+    rx0, ry0 = max(0, x0 - pad), max(0, y0 - pad)
+    rx1, ry1 = min(fw, x0 + mw + pad), min(fh, y0 + mh + pad)
+    mx0, my0 = max(x0, rx0), max(y0, ry0)
+    mx1, my1 = min(x0 + mw, rx1), min(y0 + mh, ry1)
+    if mx1 <= mx0 or my1 <= my0:
+        return frame
+    roi_mask = np.zeros((ry1 - ry0, rx1 - rx0), np.uint8)
+    roi_mask[my0 - ry0:my1 - ry0, mx0 - rx0:mx1 - rx0] = mask[my0 - y0:my1 - y0, mx0 - x0:mx1 - x0]
+    frame[ry0:ry1, rx0:rx1] = _inpaint_roi(frame[ry0:ry1, rx0:rx1], roi_mask)
+    return frame
+
+
+def load_wm_track(job, total_frames: int):
+    """Vị trí watermark chạy ({frame: (x, y)}) + mask từ wm_track.py; ({}, None) nếu không có / không dùng được."""
+    if not os.path.exists(job.wm_track):
+        return {}, None
+    try:
+        with open(job.wm_track, encoding="utf-8") as f:
+            t = json.load(f)
+    except ValueError as e:
+        print(f"  [WARN] {job.wm_track} hỏng ({e}) — bỏ qua xóa watermark chạy.")
+        return {}, None
+    if not t.get("found"):
+        return {}, None
+    if t.get("total_frames") != total_frames:
+        print("  [WARN] wm_track.json không khớp video (OCR đã chạy lại?) — bỏ qua xóa watermark chạy. "
+              "Chạy lại: python pipeline.py --input <video> --only wm")
+        return {}, None
+    mask = imread_gray(job.wm_mask)
+    if mask is None:
+        print(f"  [WARN] Thiếu {job.wm_mask} — bỏ qua xóa watermark chạy.")
+        return {}, None
+    start = int(t["start"])
+    return {start + i: (float(x), float(y)) for i, (x, y) in enumerate(t["xy"])}, mask
 
 
 def _gpu_resize(frame, new_w, new_h):
@@ -754,7 +797,8 @@ def process_chunk(args):
      video_path, temp_output, font_path,
      fps, width, height,
      ocr_interval_frames, translation_map,
-     frame_detections_for_chunk, text_segments_for_chunk, vi_for_seg) = args
+     frame_detections_for_chunk, text_segments_for_chunk, vi_for_seg,
+     wm_pos, wm_mask) = args
 
     gpu_mode = USE_GPU and USE_NVENC
     print(f"  [Worker {chunk_idx}] Render {'(GPU+NVENC) ' if gpu_mode else ''}{'(Pass Mode) ' if TIKTOK_PASS_MODE else ''}frames {start_frame}-{end_frame}...")
@@ -822,6 +866,8 @@ def process_chunk(args):
         ret, frame = cap.read()
         if not ret:
             break
+        if wm_mask is not None and frame_num in wm_pos:     # watermark chạy (wm_track.py): xóa ở mọi frame
+            frame = remove_wm(frame, wm_pos[frame_num], wm_mask)
 
         # ── Priority 1: Actual keyframe (exact bbox, chính xác nhất) ──
         frame_str = str(frame_num)
@@ -1237,6 +1283,11 @@ if __name__ == "__main__":
         print(f"  ocr_data.json là của '{ocr_data.get('original_video', '?')}' — hãy chạy lại OCR cho video này.")
         sys.exit(1)
 
+    # Watermark chạy (wm_track.py): vị trí ở từng frame + mask nét chữ → xóa ở mọi frame
+    wm_pos, wm_mask = load_wm_track(job, ocr_data["total_frames"])
+    if wm_mask is not None:
+        print(f"  Watermark chạy : xóa ở {len(wm_pos)} frame")
+
     output_video = job.output
     num_workers = args.workers
 
@@ -1274,6 +1325,8 @@ if __name__ == "__main__":
         ]
         chunk_segments.append(chunk_seg)
 
+    chunk_wm = [{f: p for f, p in wm_pos.items() if s <= f < e} for s, e in chunks]
+
     print(f"\n[3/4] Rendering {num_workers} chunks in parallel...")
     for i, (s, e) in enumerate(chunks):
         det_count = len(chunk_detections[i])
@@ -1285,7 +1338,8 @@ if __name__ == "__main__":
          video_path, temp_files[i],
          FONT_PATH, fps, width, height,
          ocr_interval_frames, translation_map,
-         chunk_detections[i], chunk_segments[i], vi_for_seg)
+         chunk_detections[i], chunk_segments[i], vi_for_seg,
+         chunk_wm[i], wm_mask)
         for i in range(num_workers)
     ]
 

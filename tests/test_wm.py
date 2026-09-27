@@ -9,6 +9,7 @@ import shutil
 import sys
 import tempfile
 from collections import defaultdict
+from types import SimpleNamespace
 
 import numpy as np
 
@@ -19,6 +20,7 @@ import wm_synth  # noqa: E402
 
 import jobs  # noqa: E402
 import utils  # noqa: E402
+import script as s  # noqa: E402
 
 
 def _det(text, cx, cy, w, h, conf=0.9):
@@ -137,6 +139,40 @@ def test_run_writes_track_mask_preview_and_can_be_disabled():
         assert wm_track.run(video) == 1, "chưa có OCR → mã 1"
     finally:
         jobs.JOBS_DIR, wm_track.WM_TRACK = orig
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_remove_wm_touches_only_mask_and_clips_at_edges():
+    rng = np.random.default_rng(1)
+    frame = rng.integers(0, 256, (100, 200, 3), np.uint8)
+    mask = np.zeros((20, 40), np.uint8)
+    mask[5:15, 10:30] = 255
+    for center in [(100, 50), (195, 98), (-5, 3)]:          # giữa, lố mép phải-dưới, lố mép trái-trên
+        out = s.remove_wm(frame.copy(), center, mask)
+        m = np.zeros(frame.shape[:2], bool)
+        x0, y0 = int(round(center[0] - 20)), int(round(center[1] - 10))
+        for yy, xx in zip(*np.nonzero(mask)):
+            if 0 <= y0 + yy < 100 and 0 <= x0 + xx < 200:
+                m[y0 + yy, x0 + xx] = True
+        assert (out[~m] == frame[~m]).all(), f"{center}: pixel ngoài mask bị đổi"
+        assert m.any() and (out[m] != frame[m]).any(), f"{center}: vùng mask phải được xóa"
+    assert (s.remove_wm(frame.copy(), (1000, 1000), mask) == frame).all(), "ngoài khung → không đổi gì"
+
+
+def test_load_wm_track_ignores_missing_or_stale():
+    d = tempfile.mkdtemp()
+    try:
+        job = SimpleNamespace(wm_track=os.path.join(d, "wm_track.json"), wm_mask=os.path.join(d, "wm_mask.png"))
+        assert s.load_wm_track(job, 100) == ({}, None), "chưa chạy wm_track → không xóa gì"
+        utils.write_json_atomic(job.wm_track, {"found": True, "total_frames": 100, "start": 10,
+                                               "xy": [[5, 6], [7, 8]], "evidence": "10"})
+        utils.imwrite_any(job.wm_mask, np.full((4, 6), 255, np.uint8))
+        pos, mask = s.load_wm_track(job, 100)
+        assert pos == {10: (5.0, 6.0), 11: (7.0, 8.0)} and mask.shape == (4, 6)
+        assert s.load_wm_track(job, 999) == ({}, None), "OCR chạy lại (số frame khác) → bỏ qua track cũ"
+        utils.write_json_atomic(job.wm_track, {"found": False, "reason": "x"})
+        assert s.load_wm_track(job, 100) == ({}, None)
+    finally:
         shutil.rmtree(d, ignore_errors=True)
 
 
