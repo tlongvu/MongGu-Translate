@@ -176,7 +176,7 @@ def detect_all(video_path, tpl_small, scale, n_frames):
     score = np.full(n_frames, -1.0, np.float32)
     cap = cv2.VideoCapture(video_path)
     for f in range(n_frames):
-        if f and f % max(1, n_frames // 10) == 0:   # bước này ~0,5× thời lượng video: báo tiến độ mỗi 10%
+        if f and f % max(1, -(-n_frames // 10)) == 0:   # bước này ~0,5× thời lượng video: báo tiến độ mỗi 10%
             print(f"  [WM] lượt 1/2 (dò toàn khung): {100 * f // n_frames}%", flush=True)
         ok, frame = cap.read()
         if not ok:
@@ -307,7 +307,7 @@ def fill_gaps(video_path, anchors, pos, tpl, fps):
     cap.set(cv2.CAP_PROP_POS_FRAMES, first)
     nxt, a, pa, va, vb = 0, first, pos[first], None, None
     for f in range(first, last + 1):
-        if f > first and (f - first) % max(1, (last - first + 1) // 10) == 0:
+        if f > first and (f - first) % max(1, -(-(last - first + 1) // 10)) == 0:
             print(f"  [WM] lượt 2/2 (lấp khoảng): {100 * (f - first) // (last - first + 1)}%", flush=True)
         ok, frame = cap.read()
         if not ok:   # video ngắn hơn dữ liệu: giữ vị trí cuối

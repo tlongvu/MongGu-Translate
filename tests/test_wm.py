@@ -164,9 +164,10 @@ def test_fill_gaps_redetects_and_follows_turn_between_distant_anchors():
     d = tempfile.mkdtemp()
     try:
         path = os.path.join(d, "synth.mp4")
-        centers, size = wm_synth.make_video(path)
+        faint = range(112, 140)                        # một phần khoảng hụt mờ → phải nội suy lại sau chỗ đổi hướng
+        centers, size = wm_synth.make_video(path, faint=faint)
         tpl, tpl_small, scale, _ = wm_track.build_template(
-            path, wm_track.find_moving_wm(wm_synth.fake_ocr(centers, size, "synth.mp4")))
+            path, wm_track.find_moving_wm(wm_synth.fake_ocr(centers, size, "synth.mp4", faint=faint)))
         pos, score = wm_track.detect_all(path, tpl_small, scale, wm_synth.N)
         anchors = [a for a in wm_track.pick_anchors(pos, score, wm_synth.FPS) if not 110 <= a <= 200]
         xy, ev = wm_track.fill_gaps(path, anchors, pos, tpl, wm_synth.FPS)
@@ -174,6 +175,7 @@ def test_fill_gaps_redetects_and_follows_turn_between_distant_anchors():
         gap = (frames > 110) & (frames < 200)
         err = np.hypot(*(xy - centers[frames]).T)
         assert ev[gap].mean() > 0.5, "phải dò lại được watermark (còn rõ) trong khoảng không có mốc"
+        assert not ev[gap].all(), "đoạn mờ trong khoảng phải được nội suy (không có bằng chứng)"
         assert err[gap].max() <= 3, f"lệch {err[gap].max():.1f}px quanh chỗ rẽ (đi thẳng sẽ lệch ~69px)"
     finally:
         shutil.rmtree(d, ignore_errors=True)
