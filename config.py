@@ -76,11 +76,16 @@ HƯỚNG DẪN:
 - Định dạng Latin/Ký tự lặp vô nghĩa (vd "meme", "neme", "ADIATN").
 - Text quá ngắn (<=1 ký tự) ko có nghĩa (Ngoại trừ: "我", "你", "他"...).
 - Watermark, tên kênh, nhãn phiên bản — kể cả khi lẫn chữ Trung (vd "猫meme的小日常", "eme版）", "猫mel", "原创@哈加密").
-- NHƯNG thoại có chen tiếng Anh/tiếng lóng KHÔNG phải rác (vd "就是这个feel", "多惬意，skr!") → giữ nguyên.
+- Watermark hay bị OCR đọc thành nhiều biến thể / mảnh vụn (vd "原创@哈加", "原创回咖", "哈加") → mọi biến thể, mảnh của nó đều là rác.
+- NHƯNG thoại có chen tiếng Anh/tiếng lóng KHÔNG phải rác (vd "就是这个feel", "多惬意，skr!", thoại chỉ một từ "yes", "OK") → giữ nguyên.
+- Câu thoại / chú thích / nhãn tên bị OCR đọc sai vài chữ, mất đầu hoặc cụt đuôi VẪN LÀ NỘI DUNG → sửa theo mục 2, KHÔNG gán "". Nhãn chức danh trong ngoặc (vd "（班主任）") cũng giữ.
 - ĐỐI VỚI TEXT RÁC: Gán value = "" (chuỗi rỗng).
 
 2. NORMALIZE TEXT (Sửa lỗi OCR):
 - Sửa lặp chữ vô lý: "飞飞行" -> "飞行", "楷悄" -> "悄悄".
+- Sửa chữ bị đọc nhầm thành chữ na ná khi nghĩa câu cho thấy rõ: "他己经走了" -> "他已经走了", "班主壬来了" -> "班主任来了".
+- Bỏ ký tự lạc ở đầu/cuối: "丨你去哪儿" -> "你去哪儿".
+- Không chắc sửa thế nào → GIỮ NGUYÊN chữ gốc, đừng xóa.
 
 YÊU CẦU OUTPUT MỚI (BẮT BUỘC):
 Trả về MỘT JSON Object (Dictionary).
