@@ -55,6 +55,10 @@ SPLIT_DEV = 8             # vị trí dò lại lệch khỏi đường dự đo
 MIN_SMALL_W = 48          # mẫu nửa độ phân giải hẹp hơn thế → dò toàn khung ở độ phân giải gốc
 _PAD, _MARGIN = 8, 4      # lề để căn patch (±8 px) / lề giữ quanh mẫu cho mask (4 px)
 
+# ── Dòng OCR nằm trên watermark: bước dịch bỏ luôn, dù model chuẩn hóa giữ lại (vd "粥米咪" → "Châu Mễ Mễ") ──
+LINE_MARGIN = 10          # nới khung watermark ±10 px (bám lệch ≤ ~10 px, box OCR rung vài px)
+LINE_INSIDE = 0.6         # ≥ 60% diện tích box dòng nằm trong khung → keyframe đó là watermark
+
 
 def find_moving_wm(ocr_data: dict):
     """Chữ watermark chạy trong ocr_data, hoặc None.
@@ -220,32 +224,39 @@ def _tracklets(pos, score, fps):
     return done + active
 
 
-def _contradicted_by_ocr(t, pos, rf, rxy):
-    """Đoạn t mâu thuẫn với OCR: trong khoảng thời gian của đoạn có lần OCR đọc đúng chữ watermark mà cách vị trí
-    của đoạn (nội suy tại frame đó) > VETO_PX → đoạn là vật khác khớp nhầm. rf/rxy: frame/tâm các lần đọc, sắp theo frame."""
+def _ocr_dist(t, pos, rf, rxy):
+    """Khoảng cách từ đoạn t (nội suy tại frame đọc) tới các lần OCR đọc đúng chữ watermark trong khoảng thời gian
+    của đoạn. rf/rxy: frame/tâm các lần đọc, sắp theo frame."""
     lo, hi = np.searchsorted(rf, [t[0], t[-1] + 1])
-    if lo == hi:
-        return False
     tf = np.asarray(t, float)
-    x = np.interp(rf[lo:hi], tf, pos[t, 0])
-    y = np.interp(rf[lo:hi], tf, pos[t, 1])
-    return bool((np.hypot(x - rxy[lo:hi, 0], y - rxy[lo:hi, 1]) > VETO_PX).any())
+    return np.hypot(np.interp(rf[lo:hi], tf, pos[t, 0]) - rxy[lo:hi, 0],
+                    np.interp(rf[lo:hi], tf, pos[t, 1]) - rxy[lo:hi, 1])
 
 
 def pick_anchors(pos, score, fps, reads=()):
     """Mốc = các đỉnh của chuỗi đoạn quỹ đạo dài nhất (tổng số đỉnh) nối được với nhau bằng chuyển động khả thi.
-    Chỉ xét đoạn ≥ MIN_TRACKLET đỉnh, có ít nhất 1 đỉnh chắc (≥ SURE), và không bị OCR phủ nhận (reads = các lần
-    OCR đọc đúng chữ watermark, xem _contradicted_by_ocr) — loại được chữ tĩnh / nhãn khớp nhầm kể cả khi nó
-    với tới được quỹ đạo. Còn hở: vật khớp nhầm xuất hiện lúc OCR không đọc được watermark lần nào mà vẫn nối được
-    vào quỹ đạo thì có thể được chọn nếu làm chuỗi thêm đỉnh."""
+    Chỉ xét đoạn ≥ MIN_TRACKLET đỉnh, có ít nhất 1 đỉnh chắc (≥ SURE), và không bị OCR phủ nhận: trong lúc đoạn chạy,
+    OCR đọc đúng chữ watermark (reads) ở chỗ cách đoạn > VETO_PX → đoạn là chữ tĩnh / nhãn khớp nhầm, kể cả khi nó
+    với tới được quỹ đạo. Watermark NHẢY (kênh 粥咪咪 chạy hết mép thì hiện lại ở đầu kia) → cho nối qua bước nhảy
+    không khả thi tới đoạn được OCR xác nhận (có lần đọc đúng chữ ngay trên đoạn). Còn hở: vật khớp nhầm xuất hiện lúc
+    OCR không đọc được watermark lần nào mà vẫn nối được vào quỹ đạo thì có thể được chọn nếu làm chuỗi thêm đỉnh."""
     vmax = MAX_SPEED / fps
+    if reads:   # chỉ tin tâm của lần đọc đủ chữ: hộp rộng / hẹp khác thường = đọc gộp chữ bên cạnh / bị cắt → tâm lệch
+        w_med = float(np.median([r[3] for r in reads]))
+        reads = [r for r in reads if abs(r[3] - w_med) <= FULL_READ_TOL * w_med]
     rf = np.array([r[0] for r in reads], int)
     rxy = np.array([(r[1], r[2]) for r in reads], float).reshape(-1, 2)
-    segs = sorted((t for t in _tracklets(pos, score, fps)
-                   if len(t) >= MIN_TRACKLET and max(score[i] for i in t) >= SURE
-                   and not _contradicted_by_ocr(t, pos, rf, rxy)), key=lambda t: t[0])
+    segs = []
+    for t in _tracklets(pos, score, fps):
+        if len(t) >= MIN_TRACKLET and max(score[i] for i in t) >= SURE:
+            dist = _ocr_dist(t, pos, rf, rxy)
+            if not (dist > VETO_PX).any():
+                segs.append((t, dist.size > 0))                      # (đoạn, được OCR xác nhận)
     if not segs:
         return []
+    segs.sort(key=lambda s: s[0][0])
+    confirmed = [c for _, c in segs]
+    segs = [t for t, _ in segs]
     ends = [(t[0], t[-1], pos[t[0]], pos[t[-1]]) for t in segs]
     total, prev = [len(t) for t in segs], [-1] * len(segs)
     for j in range(len(segs)):   # ponytail: O(số đoạn²), vài nghìn đoạn vẫn vài giây; cần nhanh hơn thì giới hạn cửa sổ i
@@ -253,7 +264,7 @@ def pick_anchors(pos, score, fps, reads=()):
         for i in range(j):
             a, pa = ends[i][1], ends[i][3]
             if b > a and total[i] + len(segs[j]) > total[j] and \
-                    math.hypot(pb[0] - pa[0], pb[1] - pa[1]) <= vmax * (b - a) + 6:
+                    (confirmed[j] or math.hypot(pb[0] - pa[0], pb[1] - pa[1]) <= vmax * (b - a) + 6):
                 total[j], prev[j] = total[i] + len(segs[j]), i
     j, chain = int(np.argmax(total)), []
     while j >= 0:
@@ -305,16 +316,17 @@ def fill_gaps(video_path, anchors, pos, tpl, fps):
     """Lượt 2: vị trí mọi frame trong [mốc đầu, mốc cuối]. Giữa 2 mốc: nội suy Hermite (vận tốc 2 đầu ước từ các
     mốc trong 1 s quanh đó; thiếu thì dây cung) rồi dò lại tại chỗ; vị trí dò được lệch khỏi đường dự đoán
     > SPLIT_DEV → chỗ đổi hướng: thành mốc mới, các frame không có bằng chứng từ mốc trước tới đây nội suy lại thẳng,
-    phần sau đi thẳng tới mốc kế. → (xy (k,2), evidence (k,) bool) bắt đầu từ anchors[0]."""
+    phần sau đi thẳng tới mốc kế. 2 mốc cách nhau một bước NHẢY (xa hơn tốc độ tối đa cho phép): đứng yên ở mốc trước
+    tới mốc sau, không nội suy quét ngang khung. → (xy (k,2), evidence (k,) bool) bắt đầu từ anchors[0]."""
     first, last = anchors[0], anchors[-1]
     af = np.asarray(anchors)
     ap = pos[af]
-    win = max(2, int(round(fps)))
+    win, vmax = max(2, int(round(fps))), MAX_SPEED / fps
     xy = np.zeros((last - first + 1, 2), np.float32)
     ev = np.zeros(last - first + 1, bool)
     cap = cv2.VideoCapture(video_path)
     cap.set(cv2.CAP_PROP_POS_FRAMES, first)
-    nxt, a, pa, va, vb = 0, first, pos[first], None, None
+    nxt, a, pa, va, vb, jump = 0, first, pos[first], None, None, False
     for f in range(first, last + 1):
         if f > first and (f - first) % max(1, -(-(last - first + 1) // 10)) == 0:
             print(f"  [WM] lượt 2/2 (lấp khoảng): {100 * (f - first) // (last - first + 1)}%", flush=True)
@@ -334,6 +346,10 @@ def fill_gaps(video_path, anchors, pos, tpl, fps):
                 va = _velocity(af, ap, a - win, a, win // 2)
                 vb = _velocity(af, ap, b, b + win, win // 2)
                 va, vb = (chord if va is None else va), (chord if vb is None else vb)
+                jump = np.hypot(*(pos[b] - pa)) > vmax * (b - a) + 6
+            continue
+        if jump:
+            xy[i] = pa
             continue
         b = anchors[nxt]
         p = np.clip(_hermite(pa, va, pos[b], vb, a, b, f), 0, (gray.shape[1] - 1, gray.shape[0] - 1))
@@ -374,6 +390,47 @@ def track_watermark(video_path, ocr_data):
             "start": int(anchors[0]), "xy": [[int(round(x)), int(round(y))] for x, y in xy],
             "evidence": "".join("1" if e else "0" for e in ev), "anchors": len(anchors),
             "seconds": round(time.time() - t0, 1)}, mask
+
+
+def load_track(path: str, total_frames: int):
+    """wm_track.json → ({frame: (x, y)}, (w, h) hoặc None nếu thiếu size); ({}, None) nếu chưa có / không thấy
+    watermark / không khớp video (OCR đã chạy lại) / hỏng (sửa tay sai dạng — cảnh báo, không làm sập bước sau)."""
+    if not os.path.exists(path):
+        return {}, None
+    try:
+        with open(path, encoding="utf-8") as f:
+            t = json.load(f)
+        if not t.get("found"):
+            return {}, None
+        if t.get("total_frames") != total_frames:
+            print("  [WARN] wm_track.json không khớp video (OCR đã chạy lại?) — bỏ qua watermark chạy. "
+                  "Chạy lại: python pipeline.py --input <video> --only wm")
+            return {}, None
+        start = int(t["start"])
+        pos = {start + i: (float(x), float(y)) for i, (x, y) in enumerate(t["xy"])}
+        size = (float(t["size"][0]), float(t["size"][1])) if "size" in t else None
+    except (ValueError, KeyError, TypeError, AttributeError, IndexError) as e:
+        print(f"  [WARN] {path} hỏng ({e!r}) — bỏ qua watermark chạy.")
+        return {}, None
+    return pos, size
+
+
+def on_watermark(seg: dict, pos: dict, size) -> bool:
+    """Dòng OCR (text segment của ocr_data) nằm gọn trong khung watermark ở ≥ nửa số keyframe có vị trí → chính là
+    watermark, OCR đọc sai thành chữ gì cũng vậy. Thoại bị watermark đè / dính vào thì rộng hơn khung nhiều, còn nhãn
+    đứng yên chỉ bị watermark lướt qua vài keyframe → giữ."""
+    hw, hh = size[0] / 2 + LINE_MARGIN, size[1] / 2 + LINE_MARGIN
+    hits = seen = 0
+    for k in seg.get("keyframe_bboxes") or []:
+        c = pos.get(k["frame"])
+        if c is None:
+            continue
+        x0, y0, x1, y1 = k["bbox"]
+        ix = min(x1, c[0] + hw) - max(x0, c[0] - hw)
+        iy = min(y1, c[1] + hh) - max(y0, c[1] - hh)
+        seen += 1
+        hits += ix > 0 and iy > 0 and ix * iy >= LINE_INSIDE * (x1 - x0) * (y1 - y0)
+    return seen > 0 and 2 * hits >= seen
 
 
 def write_preview(video_path, result, out_path, n=6):

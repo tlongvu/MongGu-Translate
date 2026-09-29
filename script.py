@@ -49,6 +49,7 @@ from config import (
 )
 from jobs import open_job, JobError, working_video
 from utils import imread_gray
+from wm_track import load_track
 
 
 # ──────────────────────────────────────────────
@@ -353,21 +354,8 @@ def remove_wm(frame, center, mask, pad=10):
 
 def load_wm_track(job, total_frames: int):
     """Vị trí watermark chạy ({frame: (x, y)}) + mask từ wm_track.py; ({}, None) nếu không có / không dùng được."""
-    if not os.path.exists(job.wm_track):
-        return {}, None
-    try:
-        with open(job.wm_track, encoding="utf-8") as f:
-            t = json.load(f)
-        if not t.get("found"):
-            return {}, None
-        if t.get("total_frames") != total_frames:
-            print("  [WARN] wm_track.json không khớp video (OCR đã chạy lại?) — bỏ qua xóa watermark chạy. "
-                  "Chạy lại: python pipeline.py --input <video> --only wm")
-            return {}, None
-        start = int(t["start"])
-        pos = {start + i: (float(x), float(y)) for i, (x, y) in enumerate(t["xy"])}
-    except (ValueError, KeyError, TypeError, AttributeError) as e:   # hỏng / sửa tay sai dạng: đừng làm sập render
-        print(f"  [WARN] {job.wm_track} hỏng ({e!r}) — bỏ qua xóa watermark chạy.")
+    pos, _ = load_track(job.wm_track, total_frames)
+    if not pos:
         return {}, None
     mask = imread_gray(job.wm_mask)
     if mask is None:

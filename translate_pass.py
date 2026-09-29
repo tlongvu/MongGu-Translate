@@ -29,6 +29,7 @@ from config import NORMALIZATION_SYSTEM_PROMPT, VIDEO_PATH
 from jobs import open_job, JobError
 from llm import ask_json, LLMError
 from utils import write_json_atomic
+from wm_track import load_track, on_watermark
 
 LABEL_MIN_SEC, LABEL_MAX_LEN = 3.0, 8        # chữ hiện ≥3s và ≤8 ký tự → ứng viên nhãn tên / tiêu đề
 MAX_LABEL_CANDIDATES = 60
@@ -133,15 +134,19 @@ def normalize_texts(unique_texts: list, batch_size: int = 150) -> dict:
 
 # ── Dòng theo từng lần xuất hiện ──
 
-def build_lines(text_segments: list, normalized: dict, old_lines: list) -> list:
+def build_lines(text_segments: list, normalized: dict, old_lines: list, wm=({}, None)) -> list:
     """Mỗi segment một dòng (id = chỉ số segment), sắp theo thời gian. Giữ noi/nghe/chac/vi_sua của
     lines.json cũ khi cùng id VÀ cùng chữ OCR gốc ("ocr") — không phụ thuộc kết quả chuẩn hóa (có thể đổi
-    khi mất cache / đổi model). Sửa tay (vi_sua) không còn khớp (OCR chạy lại) → báo WARN."""
+    khi mất cache / đổi model). Sửa tay (vi_sua) không còn khớp (OCR chạy lại) → báo WARN.
+    wm = (vị trí, cỡ) watermark chạy (wm_track.load_track): dòng nằm trên watermark là rác, dù model giữ lại."""
     old = {l.get("id"): l for l in old_lines or [] if isinstance(l, dict)}
-    lines, kept = [], set()
+    pos, size = wm
+    lines, kept, on_wm = [], set(), 0
     for i, seg in enumerate(text_segments):
         raw = seg.get("text", "")
         zh = normalized.get(raw, raw)
+        if zh and pos and size and on_watermark(seg, pos, size):
+            zh, on_wm = "", on_wm + 1
         line = {"id": i, "start": int(seg.get("start_frame", 0)),
                 "end": int(seg.get("end_frame", seg.get("start_frame", 0))),
                 "ocr": raw, "zh": zh, "loai": "thoai" if zh else "rac"}
@@ -156,6 +161,8 @@ def build_lines(text_segments: list, normalized: dict, old_lines: list) -> list:
     if lost:
         print(f"  [WARN] {len(lost)} bản sửa tay (vi_sua) không còn khớp OCR hiện tại (OCR đã chạy lại?) — bỏ qua: "
               + "; ".join(f"[{p.get('id')}] {p.get('zh', '')}" for p in lost[:5]))
+    if on_wm:
+        print(f"  [WM] {on_wm} dòng OCR nằm trên watermark chạy → coi là rác (model chuẩn hóa đã giữ lại)")
     lines.sort(key=lambda l: (l["start"], l["end"], l["id"]))
     return lines
 
@@ -525,7 +532,8 @@ def run_translation(video_path: str):
         old_lines = _load_json(job.lines, [], list)
         story = _load_json(job.story, {}, dict)
         print(f"\n[0/4] Chuẩn hóa {len(unique_texts)} chữ OCR...")
-        lines = build_lines(text_segments, normalize_texts(unique_texts), old_lines)
+        lines = build_lines(text_segments, normalize_texts(unique_texts), old_lines,
+                            load_track(job.wm_track, ocr_data.get("total_frames")))
         if not any(l["loai"] == "thoai" for l in lines):
             print("  [ERROR] Tất cả text đều bị lọc thành rác. Không có gì để dịch!")
             return False

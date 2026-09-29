@@ -202,6 +202,56 @@ def test_track_watermark_partly_outside_frame():
         shutil.rmtree(d, ignore_errors=True)
 
 
+def test_pick_anchors_ignores_reads_with_odd_box_width():
+    # Kênh 粥咪咪: OCR đọc gộp watermark với chữ bên cạnh → hộp rộng gần gấp đôi, tâm lệch 60 px. Lần đọc đó
+    # không được phủ nhận đoạn quỹ đạo thật.
+    n = 100
+    pos = np.array([[100 + 2.0 * f, 20.0] for f in range(n)], np.float32)
+    score = np.full(n, 0.8, np.float32)
+    reads = sorted([(f, 100 + 2.0 * f, 20.0, 142.0, 44.0, 0.99) for f in range(0, n, 8)]
+                   + [(50, 260.0, 22.0, 264.0, 48.0, 0.99)])
+    assert wm_track.pick_anchors(pos, score, 25.0, reads) == list(range(n))
+
+
+def _jump_track(t):
+    # Kênh 粥咪咪: chạy hết đường thì hiện lại ở đầu kia — nhảy ~270 px trong 1 frame (frame 120)
+    return np.array([100 + 2.0 * t if t < 120 else 60 + 2.0 * (t - 120), 150.0])
+
+
+def test_track_follows_watermark_that_jumps_back_to_the_start():
+    d = tempfile.mkdtemp()
+    try:
+        path = os.path.join(d, "synth.mp4")
+        centers, size = wm_synth.make_video(path, faint=(), track=_jump_track)
+        res, _ = wm_track.track_watermark(path, wm_synth.fake_ocr(centers, size, "synth.mp4", faint=()))
+        assert res["found"], res.get("reason")
+        xy = np.array(res["xy"], float)
+        frames = np.arange(res["start"], res["start"] + len(xy))
+        assert frames[0] <= 10 and frames[-1] >= 230, f"phải bám cả trước lẫn sau cú nhảy ({frames[0]}..{frames[-1]})"
+        ok = np.abs(frames - 120) > 2                              # vài frame quanh cú nhảy: không đòi đúng
+        err = np.hypot(*(xy[ok] - centers[frames[ok]]).T)
+        assert err.max() <= 4, f"lệch {err.max():.1f}px ở frame {frames[ok][err.argmax()]}"
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_fill_gaps_holds_still_across_a_jump_instead_of_sweeping():
+    d = tempfile.mkdtemp()
+    try:
+        path = os.path.join(d, "synth.mp4")
+        centers, size = wm_synth.make_video(path, faint=(), track=_jump_track)
+        wm = wm_track.find_moving_wm(wm_synth.fake_ocr(centers, size, "synth.mp4", faint=()))
+        tpl, tpl_small, scale, _ = wm_track.build_template(path, wm)
+        pos, score = wm_track.detect_all(path, tpl_small, scale, wm_synth.N)
+        anchors = [a for a in wm_track.pick_anchors(pos, score, wm_synth.FPS, wm["reads"]) if not 110 <= a <= 130]
+        assert anchors[0] < 110 and anchors[-1] > 130
+        xy, _ = wm_track.fill_gaps(path, anchors, pos, tpl, wm_synth.FPS)
+        gap = xy[111 - anchors[0]:130 - anchors[0], 0]
+        assert np.ptp(gap) <= 2, f"qua cú nhảy phải đứng chờ, không quét ngang khung (x chạy {gap.min():.0f}..{gap.max():.0f})"
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
 def test_fill_gaps_redetects_and_follows_turn_between_distant_anchors():
     # Nhánh dò lại + đổi hướng của fill_gaps: bỏ các mốc quanh chỗ rẽ (frame 150, chữ còn rõ) → phải tự dò lại để bám
     d = tempfile.mkdtemp()
@@ -275,6 +325,10 @@ def test_load_wm_track_ignores_missing_or_stale():
         utils.imwrite_any(job.wm_mask, np.full((4, 6), 255, np.uint8))
         pos, mask = s.load_wm_track(job, 100)
         assert pos == {10: (5.0, 6.0), 11: (7.0, 8.0)} and mask.shape == (4, 6)
+        assert wm_track.load_track(job.wm_track, 100) == (pos, None), "thiếu size (bản cũ) → vẫn có vị trí"
+        utils.write_json_atomic(job.wm_track, {"found": True, "total_frames": 100, "start": 10,
+                                               "xy": [[5, 6], [7, 8]], "size": [40, 20]})
+        assert wm_track.load_track(job.wm_track, 100) == (pos, (40.0, 20.0))
         assert s.load_wm_track(job, 999) == ({}, None), "OCR chạy lại (số frame khác) → bỏ qua track cũ"
         utils.write_json_atomic(job.wm_track, {"found": True, "total_frames": 100})   # sửa tay hỏng: thiếu start/xy
         assert s.load_wm_track(job, 100) == ({}, None), "JSON sai dạng → cảnh báo, không crash render"
@@ -282,6 +336,31 @@ def test_load_wm_track_ignores_missing_or_stale():
         assert s.load_wm_track(job, 100) == ({}, None)
     finally:
         shutil.rmtree(d, ignore_errors=True)
+
+
+def _kf(frames, box):
+    return {"keyframe_bboxes": [{"frame": f, "bbox": box(f)} for f in frames]}
+
+
+def test_on_watermark_only_lines_inside_the_moving_box():
+    pos = {f: (100.0 + 10 * f, 50.0) for f in range(30)}          # watermark 40×20 chạy ngang 10 px/frame
+    read = _kf(range(0, 10, 2), lambda f: [82 + 10 * f, 41, 118 + 10 * f, 59])
+    assert wm_track.on_watermark(read, pos, (40, 20)), "nằm gọn trong khung WM (đọc sai thành chữ gì cũng vậy) → rác"
+    glued = _kf(range(0, 10, 2), lambda f: [0, 40, 400, 60])
+    assert not wm_track.on_watermark(glued, pos, (40, 20)), "thoại dài bị WM đè / dính vào → giữ"
+    label = _kf(range(30), lambda f: [140, 40, 170, 60])
+    assert not wm_track.on_watermark(label, pos, (40, 20)), "WM chỉ lướt qua nhãn đứng yên vài frame → giữ"
+    assert not wm_track.on_watermark(read, {}, (40, 20)), "không có vị trí → không lọc"
+
+
+def test_build_lines_drops_lines_on_the_watermark():
+    import translate_pass as tp
+    pos = {f: (100.0, 50.0) for f in range(20)}
+    segs = [dict(_kf([0, 5], lambda f: [85, 42, 115, 58]), text="粥米咪", start_frame=0, end_frame=10),
+            dict(_kf([0, 5], lambda f: [300, 400, 360, 430]), text="你好", start_frame=0, end_frame=10)]
+    norm = {"粥米咪": "粥米咪", "你好": "你好"}                        # model giữ nhầm biến thể watermark
+    assert [l["loai"] for l in tp.build_lines(segs, norm, [], (pos, (40, 20)))] == ["rac", "thoai"]
+    assert [l["loai"] for l in tp.build_lines(segs, norm, [])] == ["thoai", "thoai"], "chưa dò watermark → như cũ"
 
 
 def test_optional_step_failure_does_not_stop_pipeline():
