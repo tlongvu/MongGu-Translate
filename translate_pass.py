@@ -55,6 +55,8 @@ Trả về DUY NHẤT một JSON object, ví dụ:
 }
 
 Quy tắc:
+- Viết tom_tat, tom_tat_tap, ten, vai bằng TIẾNG VIỆT (tên người dùng Hán Việt), không để tiếng Trung.
+- CHỈ ghi nhân vật thực sự nói / được nhắc trong LỜI THOẠI hoặc CHỮ HIỆN LÂU — không bịa thêm cho đủ (vd một loạt "王老师", "李老师"... không có trong phim).
 - id nhân vật: chữ thường không dấu nối bằng "_". Người kể chuyện xưng "我" cũng là một nhân vật.
 - xung_ho: khóa "<id người nói>><id người nghe>", cho MỌI cặp thực sự nói chuyện với nhau, theo lối xưng hô tiếng Việt hợp thể loại và quan hệ (cổ trang / tu tiên: ta–ngươi, huynh–muội, sư phụ–đồ nhi, bản tiểu thư, nô tỳ…; hiện đại: tôi–cậu, anh–em, bố/mẹ–con, chị–em…). Thêm "<id>>*" = cách xưng mặc định khi nói với nhiều người hoặc tự nói.
 - nhan: mỗi CHỮ HIỆN LÂU là nhãn tên của nhân vật nào (kể cả các biến thể OCR khác nhau của cùng một nhãn); không ghi tiêu đề, địa danh, watermark.
