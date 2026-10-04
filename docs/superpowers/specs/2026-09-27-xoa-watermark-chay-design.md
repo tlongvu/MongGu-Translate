@@ -205,3 +205,11 @@ Lộ ra 5 lỗi, đã sửa:
 5. PaddleOCR (paddle 2.6 CPU) rò ~4,4 MB mỗi frame OCR, không trả lại trong tiến trình → OCR theo đợt `OCR_CHUNK_SCANS` = 600 frame, mỗi đợt một tiến trình con. Đỉnh mỗi đợt 3–4,6 GB, máy luôn còn ≥ 2 GB trống.
 
 Kết quả: bám 54.501/54.606 frame (85% có bằng chứng), 626 s. So với 203 lần OCR đọc đủ chữ ở độ phân giải gốc (0:00–1:00, 15:00–15:30, 33:20–33:50): median 3,2 px, max 9,2 px. `newvideo` chạy lại sau các sửa: 19 mốc, median 3,6 px, max 7,8 px, khoảng bám 147–3174 — không đổi.
+
+## 12. Kiểm thật lần 3: dịch đoạn 3–8 phút rồi cả video Douyin
+
+Lộ thêm 3 lỗi của bước dò + 1 lỗi tích hợp với bước dịch, đã sửa:
+1. **Watermark nhảy.** 粥咪咪 chạy vòng quanh viền khung rồi nhảy (hết mép trên hiện lại ở đầu kia; góc dưới-trái lên góc trên-trái). Chuỗi mốc chỉ nhận chuyển động liền mạch nên bỏ trọn một phía, nội suy sai tới 23 giây — watermark không được xóa. Giờ chuỗi được nối qua bước nhảy tới đoạn có OCR xác nhận; lấp khoảng qua bước nhảy thì đứng chờ, không quét ngang khung.
+2. **Lần đọc gộp chữ.** OCR đọc gộp watermark với chữ bên cạnh (hộp rộng 192–264 px thay vì 142) → tâm lệch 27–57 px, phủ nhận oan đoạn quỹ đạo thật. Phủ nhận / xác nhận giờ chỉ dùng lần đọc đủ chữ (bề rộng lệch ≤ 8%).
+3. Lần kiểm 2 chỉ lấy mẫu 3 cửa sổ nên không thấy hai lỗi trên. Giờ đo trên MỌI lần đọc đủ chữ: cả video 8447 lần đọc, lệch trung vị 3,6 px, 0,1% lệch > 20 px (có bằng chứng 96%, trước 85%). Video ra: 303 frame lấy mẫu, khớp mẫu tại vị trí bám cao nhất 0,24 (gốc: trung vị 0,82).
+4. **Chữ của watermark lọt vào bản dịch.** Model chuẩn hóa giữ biến thể "粥米咪" thành thoại / nhãn "Châu Mễ Mễ", rồi hồ sơ truyện lấy làm nhân vật và cách gọi. Bước dịch giờ coi dòng OCR nằm gọn trong khung watermark (theo vị trí đã bám) là rác trước khi dựng hồ sơ — cả video: 49 dòng.
