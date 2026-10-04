@@ -357,6 +357,19 @@ def test_repeated_line_translated_once_and_copied():
     assert [l["vi"] for l in lines] == ["VI0", "VI0", "VI2"], "Câu bị OCR tách đôi phải cùng một bản dịch"
 
 
+def test_strip_speaker_prefix_only_the_speakers_own_name():
+    # Video Douyin 36 phút: model tự chèn tên người nói vào đầu ~2% câu dịch ("Hệ thống: Chúc mừng ngài...")
+    story = {"nhan_vat": {"ht": {"ten": "Hệ thống"}, "lam": {"ten": "Hiệu trưởng Lâm"}}}
+    lines = [_line(1, '恭喜获得', 0, 5, noi='ht', vi='Hệ thống: Chúc mừng ngài.'),
+             _line(2, '所以成绩', 6, 9, noi='lam', vi='Tôi: Vậy nên thành tích'),
+             _line(3, '条件一.当周所有科目', 10, 15, noi='?', vi='Điều kiện 1: Tất cả các môn'),
+             _line(4, '公告：明天放假', 16, 20, noi='ht', vi='Hệ thống: Thông báo'),   # câu gốc có ':' → giữ
+             _line(5, '你好', 21, 25, noi='lam', vi='Hệ thống: Chào')]                # không phải tên người nói → giữ
+    assert tp.strip_speaker_prefix(lines, story) == 2
+    assert [l["vi"] for l in lines] == ["Chúc mừng ngài.", "Vậy nên thành tích", "Điều kiện 1: Tất cả các môn",
+                                        "Hệ thống: Thông báo", "Hệ thống: Chào"]
+
+
 def test_attribute_speakers_reasks_lines_with_removed_characters():
     story = {"nhan_vat": {"tt": {"ten": "Tôn Tình"}}}                      # sun_qing đã đổi tên thành tt
     lines = [_line(1, '你好', 0, 5, noi='sun_qing', nghe='*', chac=1.0)]
@@ -367,9 +380,9 @@ def test_attribute_speakers_reasks_lines_with_removed_characters():
 
 def test_qa_lines_only_accepts_window_ids_and_keeps_on_error():
     lines = [_line(1, '你好', 0, 5, noi='a', nghe='b', vi='Chào'), _line(2, '走吧', 6, 9, noi='b', nghe='a', vi='Đi')]
-    fixed = _with_fake_llm(lambda s, u, temperature=0.1, **kw: {"1": "Xin chào", "999": "ngoài cửa sổ"},
+    fixed = _with_fake_llm(lambda s, u, temperature=0.1, **kw: {"1": "Xin chào", "2": "Đi", "999": "ngoài cửa sổ"},
                            tp.qa_lines, lines, {})
-    assert fixed == 1 and [l["vi"] for l in lines] == ["Xin chào", "Đi"]
+    assert fixed == 1 and [l["vi"] for l in lines] == ["Xin chào", "Đi"], "trả lại y nguyên câu cũ không tính là sửa"
 
     def broken(*a, **kw):
         raise tp.LLMError("hỏng")

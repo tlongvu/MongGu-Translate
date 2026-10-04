@@ -23,6 +23,7 @@ if hasattr(sys.stderr, 'reconfigure'):
 import argparse
 import json
 import os
+import re
 import time
 
 from config import NORMALIZATION_SYSTEM_PROMPT, VIDEO_PATH
@@ -498,10 +499,23 @@ def qa_lines(lines: list, story: dict) -> int:
             print(f"  [Rà soát][WARN] Bỏ qua cửa sổ {start}: {e}")
             continue
         for k, v in (got.items() if isinstance(got, dict) else []):
-            if k in own and isinstance(v, str) and v.strip():
+            if k in own and isinstance(v, str) and v.strip() and v.strip() != own[k]["vi"]:
                 own[k]["vi"] = v.strip()
                 fixed += 1
     return fixed
+
+
+def strip_speaker_prefix(lines: list, story: dict) -> int:
+    """Model hay tự chèn tên người nói vào đầu câu dịch ("Hệ thống: Chúc mừng ngài...") → bỏ, khi tên đó là của
+    chính người nói (hoặc "Tôi") và câu gốc không có dấu hai chấm. Trả về số dòng đã sửa."""
+    nv, n = story.get("nhan_vat") or {}, 0
+    for l in lines:
+        m = re.match(r"\s*([^:：]{1,25})[:：]\s*(?=\S)", l.get("vi") or "")
+        who = nv.get(l.get("noi"))
+        if m and l["loai"] == "thoai" and not re.search("[:：]", l["zh"]) and \
+                m.group(1).strip() in {"Tôi", who.get("ten") if isinstance(who, dict) else None}:
+            l["vi"], n = l["vi"][m.end():], n + 1
+    return n
 
 
 def run_translation(video_path: str):
@@ -568,6 +582,9 @@ def run_translation(video_path: str):
         translate_labels(lines, ctx_story)
         print("\n[4/4] Rà soát...")
         print(f"  Đã sửa {qa_lines(lines, ctx_story)} dòng")
+        n = strip_speaker_prefix(lines, ctx_story)
+        if n:
+            print(f"  Bỏ tên người nói model tự chèn ở đầu câu: {n} dòng")
         copy_repeats(lines)
     except (LLMError, ValueError) as e:
         print(f"  [ERROR] Dịch thất bại: {e}")
