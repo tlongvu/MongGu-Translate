@@ -43,7 +43,7 @@ from config import (
     TIKTOK_PASS_MODE, PASS_ZOOM_RATIO, PASS_SHARPEN, PASS_COLOR_ADJUST,
     PASS_PORTRAIT_916, SUPPRESS_QR_CODES,
     USE_GPU, USE_NVENC, USE_NVDEC, USE_TORCH_CUDA, GPU_MAX_LOAD,
-    INPAINT_METHOD,
+    INPAINT_METHOD, OUTPUT_HEIGHT, OUTPUT_SHARPEN,
     SUBTITLE_BG_ENABLE, SUBTITLE_BG_COLOR, SUBTITLE_BG_ALPHA,
     SUBTITLE_BG_PAD, SUBTITLE_BG_RADIUS,
 )
@@ -350,6 +350,21 @@ def remove_wm(frame, center, mask, pad=10):
     roi_mask[my0 - ry0:my1 - ry0, mx0 - rx0:mx1 - rx0] = mask[my0 - y0:my1 - y0, mx0 - x0:mx1 - x0]
     frame[ry0:ry1, rx0:rx1] = _inpaint_roi(frame[ry0:ry1, rx0:rx1], roi_mask)
     return frame
+
+
+def output_size(w: int, h: int) -> tuple:
+    """Cỡ video ra: nguồn thấp hơn OUTPUT_HEIGHT thì phóng lên (giữ tỉ lệ, cạnh chẵn cho H.264); không thu nhỏ."""
+    if not OUTPUT_HEIGHT or h >= OUTPUT_HEIGHT:
+        return w, h
+    return int(round(w * OUTPUT_HEIGHT / h / 2)) * 2, OUTPUT_HEIGHT
+
+
+def upscale(frame, out_w: int, out_h: int):
+    """Phóng Lanczos rồi làm nét nhẹ (OUTPUT_SHARPEN) — đỡ mờ khi kéo 576p / 720p lên 1080p."""
+    big = cv2.resize(frame, (out_w, out_h), interpolation=cv2.INTER_LANCZOS4)
+    if OUTPUT_SHARPEN > 0:
+        big = cv2.addWeighted(big, 1 + OUTPUT_SHARPEN, cv2.GaussianBlur(big, (0, 0), 1.2), -OUTPUT_SHARPEN, 0)
+    return big
 
 
 def load_wm_track(job, total_frames: int):
@@ -797,8 +812,8 @@ def process_chunk(args):
         raise RuntimeError(f"[Worker {chunk_idx}] Không mở được video: {video_path}")
     cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
 
-    # Nếu chạy 9:16 nền mờ, output resolution thay đổi
-    out_w, out_h = width, height
+    # Nếu chạy 9:16 nền mờ, output resolution thay đổi; không thì phóng lên OUTPUT_HEIGHT (Full HD)
+    out_w, out_h = (width, height) if TIKTOK_PASS_MODE else output_size(width, height)
     if TIKTOK_PASS_MODE and PASS_PORTRAIT_916:
         out_w, out_h = 1080, 1920
 
@@ -813,9 +828,9 @@ def process_chunk(args):
             '-i', '-',
             '-c:v', 'h264_nvenc',
             '-pix_fmt', 'yuv420p',     # Force correct color conversion
-            '-preset', 'p4',           # Balanced speed/quality
+            '-preset', 'p6',           # Chậm hơn p4 một chút, nét hơn
             '-rc', 'vbr',              # Variable bitrate
-            '-cq', '23',               # Quality level
+            '-cq', '19',               # Chất lượng (thấp = nét hơn, file to hơn; trước là 23 — user thấy mờ)
             '-gpu', '0',
             temp_output
         ]
@@ -968,7 +983,11 @@ def process_chunk(args):
                 frame[y1:y2, x1:x2] = inpainted_roi
 
         # ── TIKTOK PASS MODE: Transformations ──
-        x_off, y_off, content_scale = 0, 0, 1.0
+        x_off, y_off, content_scale, text_scale = 0, 0, 1.0, 1.0
+        if not TIKTOK_PASS_MODE and (out_w, out_h) != (frame.shape[1], frame.shape[0]):
+            # Phóng Full HD: sau khi xóa chữ / watermark (ở cỡ nguồn), trước khi vẽ phụ đề (vẽ thẳng ở cỡ ra cho nét)
+            content_scale = text_scale = out_h / frame.shape[0]
+            frame = upscale(frame, out_w, out_h)
         if TIKTOK_PASS_MODE:
             # 1. Phát hiện và xóa mã QR
             if SUPPRESS_QR_CODES and qr_detector:
@@ -1006,9 +1025,9 @@ def process_chunk(args):
             
             if drawable:
                 # ── Bước 1: Build "render jobs" cho từng cụm chữ vẽ được ──
-                LINE_SPACING = 12
-                MARGIN = 8        # khoảng cách an toàn giữa 2 cụm chữ (px)
-                MIN_SIZE = 22
+                LINE_SPACING = round(12 * text_scale)
+                MARGIN = round(8 * text_scale)        # khoảng cách an toàn giữa 2 cụm chữ (px)
+                MIN_SIZE = round(22 * text_scale)
 
                 jobs = []
                 
@@ -1034,7 +1053,7 @@ def process_chunk(args):
                     max_w = max(max_w, 150)
                     
                     # Cỡ chữ tỷ lệ theo frame mới
-                    pref_size = max(MIN_SIZE, min(int(draw_box_h * 0.8), 36))
+                    pref_size = max(MIN_SIZE, min(int(draw_box_h * 0.8), round(36 * text_scale)))
 
                     start_y = max(0, draw_y - 2)
                     jobs.append({
@@ -1066,7 +1085,7 @@ def process_chunk(args):
                         smart_draw_text_on_pil(
                             draw, j['text'], j['cx'], j['y'],
                             font_path, j['size'], j['max_w'],
-                            TEXT_COLOR, OUTLINE_COLOR, OUTLINE_WIDTH,
+                            TEXT_COLOR, OUTLINE_COLOR, max(1, round(OUTLINE_WIDTH * text_scale)),
                             out_h, out_w, min_size=MIN_SIZE,
                             line_spacing=LINE_SPACING, align="center",
                         )

@@ -59,6 +59,8 @@ MIN_ANCHORS = 20
 LOCAL_R = 24              # bán kính dò lại quanh điểm nội suy (px, full-res)
 SPLIT_DEV = 8             # vị trí dò lại lệch khỏi đường dự đoán > 8 px → chỗ đổi hướng
 MIN_SMALL_W = 48          # mẫu nửa độ phân giải hẹp hơn thế → dò toàn khung ở độ phân giải gốc
+MAX_GUESS = 25            # chỉ dùng (xóa / lọc dòng) vị trí cách frame có bằng chứng ≤ 25 frame: video 奇异之修
+                          # (watermark mờ, 20% có bằng chứng) đoán xa hơn thì lệch vài chục px → inpaint làm nhòe hình
 _PAD, _MARGIN = 8, 4      # lề để căn patch (±8 px) / lề giữ quanh mẫu cho mask (4 px)
 
 # ── Dòng OCR nằm trên watermark: bước dịch bỏ luôn, dù model chuẩn hóa giữ lại (vd "粥米咪" → "Châu Mễ Mễ") ──
@@ -443,6 +445,11 @@ def load_track(path: str, total_frames: int):
             return {}, None
         start = int(t["start"])
         pos = {start + i: (float(x), float(y)) for i, (x, y) in enumerate(t["xy"])}
+        ev = t.get("evidence")
+        if isinstance(ev, str) and len(ev) == len(pos) and "1" in ev:   # bỏ vị trí đoán quá xa bằng chứng
+            e = np.frombuffer(ev.encode(), np.uint8) == ord("1")
+            near = np.convolve(e, np.ones(2 * MAX_GUESS + 1), "same") > 0
+            pos = {f: p for (f, p), ok in zip(pos.items(), near) if ok}
         size = (float(t["size"][0]), float(t["size"][1])) if "size" in t else None
     except (ValueError, KeyError, TypeError, AttributeError, IndexError) as e:
         print(f"  [WARN] {path} hỏng ({e!r}) — bỏ qua watermark chạy.")

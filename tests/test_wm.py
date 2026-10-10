@@ -345,6 +345,16 @@ def test_run_writes_track_mask_preview_and_can_be_disabled():
         shutil.rmtree(d, ignore_errors=True)
 
 
+def test_output_size_upscales_to_1080_keeping_aspect():
+    assert s.OUTPUT_HEIGHT == 1080
+    assert s.output_size(960, 720) == (1440, 1080)
+    assert s.output_size(768, 576) == (1440, 1080)
+    assert s.output_size(854, 480) == (1922, 1080), "cạnh chẵn (H.264 yuv420p)"
+    assert s.output_size(1920, 1080) == (1920, 1080) and s.output_size(2560, 1440) == (2560, 1440), "không thu nhỏ"
+    big = s.upscale(np.full((576, 768, 3), 128, np.uint8), 1440, 1080)
+    assert big.shape == (1080, 1440, 3) and int(big[540, 720, 0]) == 128
+
+
 def test_remove_wm_touches_only_mask_and_clips_at_edges():
     rng = np.random.default_rng(1)
     frame = rng.integers(0, 256, (100, 200, 3), np.uint8)
@@ -381,6 +391,20 @@ def test_load_wm_track_ignores_missing_or_stale():
         assert s.load_wm_track(job, 100) == ({}, None), "JSON sai dạng → cảnh báo, không crash render"
         utils.write_json_atomic(job.wm_track, {"found": False, "reason": "x"})
         assert s.load_wm_track(job, 100) == ({}, None)
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_load_track_drops_guesses_far_from_evidence():
+    # Video 奇异之修 (watermark mờ, 20% frame có bằng chứng): vị trí đoán xa bằng chứng lệch tới vài chục px → inpaint
+    # làm nhòe hình chỗ không có watermark. Chỉ giữ vị trí cách bằng chứng ≤ MAX_GUESS frame.
+    d = tempfile.mkdtemp()
+    try:
+        p, n, g = os.path.join(d, "wm_track.json"), 200, wm_track.MAX_GUESS
+        utils.write_json_atomic(p, {"found": True, "total_frames": 300, "start": 50, "xy": [[1, 2]] * n,
+                                    "evidence": "1" + "0" * (n - 2) + "1"})
+        pos, _ = wm_track.load_track(p, 300)
+        assert sorted(pos) == list(range(50, 50 + g + 1)) + list(range(50 + n - 1 - g, 50 + n))
     finally:
         shutil.rmtree(d, ignore_errors=True)
 

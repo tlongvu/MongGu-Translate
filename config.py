@@ -109,6 +109,10 @@ OUTLINE_COLOR = (0, 0, 0)       # Đen
 OUTLINE_WIDTH = 2
 INPAINT_RADIUS = 4              # Giảm từ 7 → 4 (nhanh hơn, vẫn clean tốt)
 INPAINT_METHOD = "telea"        # "telea" | "ns" (chất lượng) | "fill" (siêu nhanh: blur fill)
+# Video ra: nguồn thấp hơn thì phóng lên chiều cao này (giữ tỉ lệ; 768×576 / 960×720 → 1440×1080). Phóng SAU khi xóa
+# chữ / watermark, TRƯỚC khi vẽ phụ đề → phụ đề vẽ thẳng ở 1080p, sắc nét. 0 = giữ nguyên cỡ nguồn.
+OUTPUT_HEIGHT = 1080
+OUTPUT_SHARPEN = 0.3            # làm nét nhẹ sau khi phóng (0 = tắt; cao quá làm lộ nhiễu nén của nguồn)
 
 # ── Nền mờ bán trong suốt sau chữ (plate) — tăng độ đọc trên nền sáng/nhiễu ──
 SUBTITLE_BG_ENABLE = False       # Vẽ hộp nền mờ phía sau mỗi cụm phụ đề
