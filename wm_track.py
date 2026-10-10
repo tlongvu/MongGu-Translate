@@ -17,6 +17,7 @@ import argparse
 import json
 import math
 import os
+import re
 import sys
 import time
 from collections import defaultdict
@@ -27,7 +28,7 @@ if hasattr(sys.stdout, "reconfigure"):   # in tiếng Việt khi chạy tay trê
 import cv2
 import numpy as np
 
-from config import VIDEO_PATH, WM_TRACK
+from config import SUPPRESS_TEXTS, VIDEO_PATH, WM_TRACK
 from jobs import JobError, open_job, working_video
 from utils import imwrite_any, write_json_atomic
 
@@ -37,6 +38,11 @@ MIN_READS = 10            # xuất hiện ≥ 10 lần trong ocr_data
 MIN_PRESENCE = 0.40       # có mặt ≥ 40% số đoạn 10 giây (watermark 57–78%; nhãn nhân vật ≤ 21%)
 MIN_SPREAD_FRAC = 0.05    # tâm box tản ≥ 5% đường chéo khung (watermark tĩnh tản 4–6 px)
 MAX_WIDTH_CV = 0.15       # bề rộng box dao động ≤ 15% (watermark có cỡ cố định)
+LOW_PRESENCE = 0.10       # chữ có dấu hiệu watermark (_wm_like): watermark mờ, OCR hiếm đọc được (明月猫meme: 14–17%)
+_WM_LIKE = re.compile(r"meme|原创|^原文|^《.+》$", re.I)
+_KNOWN_WM = {"".join(s.split()) for s in SUPPRESS_TEXTS}
+PARTNER_MIN_READS = 3     # dòng chạy kèm watermark: ≥ 3 lần đọc chung frame với watermark
+PARTNER_JITTER = 8        # ... độ lệch so với watermark dao động ≤ 8 px (cùng một khối)
 
 # ── Mẫu + bám (số liệu: spec mục 2, 4.2, 4.3) ──
 FULL_READ_TOL = 0.08      # lần OCR "đọc đủ chữ": bề rộng lệch ≤ 8% trung vị
@@ -85,10 +91,41 @@ def find_moving_wm(ocr_data: dict):
         presence = len({int(f) // win for f in a[:, 0]}) / n_win
         spread = float(np.hypot(a[:, 1].std(), a[:, 2].std()))
         width_cv = float(a[:, 3].std() / max(a[:, 3].mean(), 1e-6))
-        if presence >= MIN_PRESENCE and spread >= min_spread and width_cv <= MAX_WIDTH_CV:
+        min_presence = LOW_PRESENCE if (_WM_LIKE.search(t) or t in _KNOWN_WM) else MIN_PRESENCE
+        if presence >= min_presence and spread >= min_spread and width_cv <= MAX_WIDTH_CV:
             if best is None or len(reads) > len(best["reads"]):
                 best = {"text": t, "reads": sorted(reads)}
-    return best
+    return best and _with_partners(best, groups, min_spread)
+
+
+def _with_partners(wm, groups, min_spread):
+    """Dòng chữ khác luôn chạy kèm watermark ở độ lệch cố định (vd "《奇异之修》" nằm trên "明月猫meme") → cùng một
+    khối: các lần đọc đủ chữ của watermark đổi thành hộp bao cả khối, để dựng mẫu / bám / xóa / lọc dòng theo khối.
+    Không có dòng nào chạy kèm → giữ nguyên."""
+    w_med = float(np.median([r[3] for r in wm["reads"]]))
+    full = {r[0]: r for r in wm["reads"] if abs(r[3] - w_med) <= FULL_READ_TOL * w_med}
+    mh = float(np.median([r[4] for r in full.values()]))
+    box, names = [-w_med / 2, -mh / 2, w_med / 2, mh / 2], [wm["text"]]   # khối, tương đối so với tâm watermark
+    for t, rs in groups.items():
+        rel = [(r[1] - full[r[0]][1], r[2] - full[r[0]][2], r[3], r[4], full[r[0]][1], full[r[0]][2])
+               for r in rs if r[0] in full]
+        if t == wm["text"] or len(rel) < PARTNER_MIN_READS:
+            continue
+        a = np.array(rel)
+        if a[:, :2].std(axis=0).max() > PARTNER_JITTER or np.hypot(*a[:, 4:].std(axis=0)) < min_spread:
+            continue                        # độ lệch không cố định, hoặc chưa thấy chúng cùng di chuyển
+        dx, dy, pw, ph = np.median(a[:, :4], axis=0)
+        ix = min(dx + pw / 2, w_med / 2) - max(dx - pw / 2, -w_med / 2)
+        iy = min(dy + ph / 2, mh / 2) - max(dy - ph / 2, -mh / 2)
+        if ix > 0 and iy > 0 and ix * iy >= 0.5 * pw * ph:
+            continue                        # nằm trong khung watermark: mảnh đọc thiếu của chính nó
+        box = [min(box[0], dx - pw / 2), min(box[1], dy - ph / 2), max(box[2], dx + pw / 2), max(box[3], dy + ph / 2)]
+        names.append(t)
+    if len(names) == 1:
+        return wm
+    ox, oy, bw, bh = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2, box[2] - box[0], box[3] - box[1]
+    return {"text": " + ".join(names),
+            "reads": [(f, cx + ox, cy + oy, bw, bh, c) for f, cx, cy, _, _, c in sorted(full.values())]}
 
 
 def _grad(gray):

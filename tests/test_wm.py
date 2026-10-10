@@ -69,12 +69,47 @@ def test_find_moving_wm_each_threshold_excludes_on_its_own():
         "cỡ box dao động > 15%"
     early = defaultdict(list)
     for f in range(0, 500, 3):
-        early[f].append(_det("原创@哈加密", 200 + f * 2, 150 + f, 190, 46))
-    assert wm_track.find_moving_wm(_ocr(early)) is None, "chỉ có mặt < 40% số đoạn 10 s"
+        early[f].append(_det("青云仙门掌门", 200 + f * 2, 150 + f, 190, 46))
+    assert wm_track.find_moving_wm(_ocr(early)) is None, "chữ thường (vd nhãn) chỉ có mặt < 40% số đoạn 10 s"
     static = defaultdict(list)
     for f in range(0, 3000, 20):
         static[f].append(_det("原创@哈加密", 700, 500, 190, 46))
     assert wm_track.find_moving_wm(_ocr(static)) is None, "đứng yên (tản < 5% đường chéo)"
+
+
+def test_find_moving_wm_accepts_rarely_read_faint_watermark_but_not_labels():
+    # Kênh 明月猫meme: watermark mờ, OCR chỉ đọc được ở 14–17% số đoạn 10 s; nhãn nhân vật cũng tới ~21%
+    def rare(text, frames):
+        fd = defaultdict(list)
+        for f in frames:
+            fd[f].append(_det(text, 200 + f * 0.3, 150 + f * 0.2, 164, 40))
+        return _ocr(fd)
+    two = list(range(0, 240, 8)) + list(range(1500, 1740, 8))          # 2/12 đoạn 10 s = 17%
+    assert wm_track.find_moving_wm(rare("明月猫meme", two))["text"] == "明月猫meme"
+    assert wm_track.find_moving_wm(rare("《奇异之修》", two))["text"] == "《奇异之修》"
+    assert wm_track.find_moving_wm(rare("青云仙门掌门", two)) is None, "chữ thường giữ ngưỡng 40%"
+    one = defaultdict(list)
+    for f in range(0, 240, 8):                                          # 1/12 = 8%
+        one[f].append(_det("明月猫meme", 200 + f * 2, 150 + f, 164, 40))
+    assert wm_track.find_moving_wm(_ocr(one)) is None, "dấu hiệu watermark vẫn cần ≥ 10% số đoạn 10 s"
+
+
+def test_find_moving_wm_merges_lines_moving_together_into_one_block():
+    # Video 奇异之修: "《奇异之修》" luôn nằm trên "明月猫meme" ~28 px, chạy cùng nhau → bám / xóa cả khối
+    fd = defaultdict(list)
+    for f in range(0, 3000, 20):
+        x, y = 200 + f * 0.3, 150 + f * 0.2
+        fd[f].append(_det("明月猫meme", x, y + 28, 164, 30))
+        if f % 40 == 0:
+            fd[f].append(_det("《奇异之修》", x - 6, y, 140, 30))
+            fd[f].append(_det("明月猫", x - 30, y + 28, 90, 30))            # mảnh đọc thiếu: nằm trong khung → không ghép
+        if f % 100 == 0:
+            fd[f].append(_det("台词内容测试", 720, 950, 300, 40))          # thoại đứng yên: độ lệch đổi → không ghép
+    wm = wm_track.find_moving_wm(_ocr(fd))
+    assert len(wm["reads"]) == 150
+    # khối = hộp bao 2 dòng: x [x-82, x+82], y [y-15, y+43] → tâm (x, y+14), cỡ 164×58
+    assert wm["reads"][0] == (0, 200.0, 164.0, 164.0, 58.0, 0.9), wm["reads"][0]
+    assert "《奇异之修》" in wm["text"] and "台词" not in wm["text"] and wm["text"].count("明月猫") == 1
 
 
 def test_find_moving_wm_reads_are_frame_ordered_tuples():
