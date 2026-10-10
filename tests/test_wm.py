@@ -112,6 +112,18 @@ def test_find_moving_wm_merges_lines_moving_together_into_one_block():
     assert "《奇异之修》" in wm["text"] and "台词" not in wm["text"] and wm["text"].count("明月猫") == 1
 
 
+def test_find_moving_wm_merges_partner_despite_tall_overlapping_ocr_boxes():
+    # OCR thật (video 奇异之修): hộp mỗi dòng cao ~76 px dù 2 dòng chỉ cách nhau 28 px → hộp chồng nhau quá nửa
+    fd = defaultdict(list)
+    for f in range(0, 3000, 20):
+        x, y = 200 + f * 0.3, 150 + f * 0.2
+        fd[f].append(_det("明月猫meme", x, y + 28, 164, 78))
+        if f % 40 == 0:
+            fd[f].append(_det("《奇异之修》", x - 6, y, 140, 74))
+    wm = wm_track.find_moving_wm(_ocr(fd))
+    assert "《奇异之修》" in wm["text"] and wm["reads"][0][3:5] == (164.0, 104.0), wm["reads"][0]
+
+
 def test_find_moving_wm_reads_are_frame_ordered_tuples():
     fd = {}
     for f in reversed(range(0, 3000, 20)):      # chèn ngược thứ tự thời gian

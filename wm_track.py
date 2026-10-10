@@ -109,17 +109,15 @@ def _with_partners(wm, groups, min_spread):
     for t, rs in groups.items():
         rel = [(r[1] - full[r[0]][1], r[2] - full[r[0]][2], r[3], r[4], full[r[0]][1], full[r[0]][2])
                for r in rs if r[0] in full]
-        if t == wm["text"] or len(rel) < PARTNER_MIN_READS:
+        # mảnh đọc thiếu ("明月猫") / đọc gộp của chính watermark: so theo chữ — hộp OCR cao hơn nét chữ nhiều nên
+        # 2 dòng thật cũng chồng nhau quá nửa (video 奇异之修: hộp cao ~76 px, 2 dòng cách nhau 28 px)
+        if t in wm["text"] or wm["text"] in t or len(rel) < PARTNER_MIN_READS:
             continue
         a = np.array(rel)
         if a[:, :2].std(axis=0).max() > PARTNER_JITTER or np.hypot(*a[:, 4:].std(axis=0)) < min_spread:
             continue                        # độ lệch không cố định, hoặc chưa thấy chúng cùng di chuyển
         dx, dy, pw, ph = np.median(a[:, :4], axis=0)
-        ix = min(dx + pw / 2, w_med / 2) - max(dx - pw / 2, -w_med / 2)
-        iy = min(dy + ph / 2, mh / 2) - max(dy - ph / 2, -mh / 2)
-        if ix > 0 and iy > 0 and ix * iy >= 0.5 * pw * ph:
-            continue                        # nằm trong khung watermark: mảnh đọc thiếu của chính nó
-        box = [min(box[0], dx - pw / 2), min(box[1], dy - ph / 2), max(box[2], dx + pw / 2), max(box[3], dy + ph / 2)]
+        box =[min(box[0], dx - pw / 2), min(box[1], dy - ph / 2), max(box[2], dx + pw / 2), max(box[3], dy + ph / 2)]
         names.append(t)
     if len(names) == 1:
         return wm
