@@ -478,7 +478,9 @@ def translate_labels(lines: list, story: dict) -> None:
     need = [str(i) for i in range(len(texts))]
     got = ask_json(LABEL_SYS, user,
                    check=lambda o: isinstance(o, dict) and all(isinstance(o.get(i), str) and o[i].strip() for i in need))
-    vi = {zh: got[str(i)].strip() for i, zh in enumerate(texts)}
+    # model hay chép luôn gợi ý đầu vào: "Lợi Lâm (nhãn của: Lilian)" → bỏ phần "(nhãn của: …)"
+    vi = {zh: re.sub(r"\s*[(（]\s*nhãn của\s*[:：][^)）]*[)）]", "", got[str(i)]).strip() or got[str(i)].strip()
+          for i, zh in enumerate(texts)}
     for l in lines:
         if l["loai"] == "nhan":
             l["vi"] = vi[l["zh"]]

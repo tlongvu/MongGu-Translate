@@ -291,6 +291,14 @@ def test_translate_labels_once_per_text_not_mixed_into_dialogue():
     assert [l.get("vi") for l in lines] == ["Tôn Tình", None, "Tôn Tình", "Uyển Tuyết (nữ chính)"]
 
 
+def test_translate_labels_drops_echoed_owner_hint():
+    # Video Douyin "末世开中华餐厅": model chép luôn gợi ý đầu vào → nhãn hiện "Lợi Lâm (nhãn của: Lilian)"
+    lines = [_line(0, '莉琳', 0, 50, loai='nhan'), _line(1, '宛雪（女主）', 60, 90, loai='nhan')]
+    _with_fake_llm(lambda s, u, temperature=0.1, **kw: {"0": "Lợi Lâm (nhãn của: Lilian)", "1": "Uyển Tuyết (nữ chính)"},
+                   tp.translate_labels, lines, {})
+    assert [l["vi"] for l in lines] == ["Lợi Lâm", "Uyển Tuyết (nữ chính)"]
+
+
 def test_translate_lines_retries_missing_and_empty_then_raises():
     lines = [_line(1, '你好', 0, 5, noi='a', nghe='b'), _line(2, '走吧', 6, 9, noi='b', nghe='a')]
     calls = []
