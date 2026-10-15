@@ -11,11 +11,88 @@ Cơ chế khóa nhân vật:
 
 Chạy:
   python make_story_reel.py --chars characters.json --script script.json -o reel.mp4
+  python make_story_reel.py --idea "Mèo Chuối đi thi tuyển đệ tử nhưng quên mang kiếm" -o reel.mp4
+    (--idea: LLM viết kịch bản CHỈ dùng nhân vật / cảm xúc / bối cảnh trong characters.json,
+     lưu ra kich_ban/*.json để sửa tay rồi dựng lại bằng --script)
 Phụ thuộc: ffmpeg, Pillow. (Tùy chọn: edge-tts để lồng giọng; numpy để sinh nhạc.)
 """
-import os, sys, json, argparse, subprocess, tempfile, shutil
+import os, sys, json, argparse, subprocess, tempfile, shutil, time
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.dirname(ROOT))  # lõi dùng chung với pipeline dịch (llm.py: Gemini → DeepSeek, có cache)
+
+SCRIPT_SYS = """Bạn là biên kịch reel hài ngắn (30-60 giây) cho mạng xã hội, giọng văn tiếng Việt tự nhiên, hài hước.
+Tôi đưa THƯ VIỆN (nhân vật, cảm xúc, bối cảnh có sẵn) và một Ý TƯỞNG. Hãy viết kịch bản 5-10 cảnh.
+Trả về DUY NHẤT một JSON object:
+{"title": "tên reel", "scenes": [{"char": "<id nhân vật>", "emotion": "<cảm xúc>", "bg": "<id bối cảnh>", "say": "<lời thoại>"}]}
+Quy tắc:
+- CHỈ dùng id nhân vật, cảm xúc, bối cảnh có trong THƯ VIỆN (viết đúng id).
+- Mỗi cảnh một nhân vật nói một câu ngắn (≤ 90 ký tự), xưng hô đúng quan hệ giữa các nhân vật.
+- Có mở đầu, cao trào, và câu chốt gây cười ở cảnh cuối.
+KHÔNG giải thích."""
+
+
+def _pos(v, types=(int, float)):
+    return isinstance(v, types) and not isinstance(v, bool) and v > 0
+
+
+def script_problems(scr, cfg) -> list:
+    """Các lỗi của kịch bản so với thư viện characters.json (rỗng = dựng được)."""
+    if not isinstance(scr, dict) or not isinstance(scr.get("scenes"), list) or not scr["scenes"]:
+        return ["kịch bản không có 'scenes'"]
+    chars, bgs = cfg.get("characters", {}), cfg.get("backgrounds", {})
+    probs = []
+    res = scr.get("resolution", [1080, 1920])
+    if not (isinstance(res, list) and len(res) == 2 and all(_pos(v, int) for v in res)):
+        probs.append(f"resolution phải là [rộng, cao], không phải {res!r}")
+    for i, sc in enumerate(scr["scenes"], 1):
+        if not isinstance(sc, dict):
+            probs.append(f"cảnh {i}: không phải object")
+            continue
+        c, bg = sc.get("char"), sc.get("bg")
+        if not isinstance(c, str) or c not in chars:
+            probs.append(f"cảnh {i}: nhân vật lạ {c!r}")
+        else:  # cảm xúc: chung + riêng của nhân vật (pick_clip tìm riêng trước)
+            e = sc.get("emotion") or "idle"
+            if not isinstance(e, str) or e not in {"idle", "base", *cfg.get("emotions", {}), *chars[c].get("emotions", {})}:
+                probs.append(f"cảnh {i}: cảm xúc lạ {e!r}")
+        if not isinstance(bg, str) or bg not in bgs:
+            probs.append(f"cảnh {i}: bối cảnh lạ {bg!r}")
+        if not isinstance(sc.get("say"), str) or not sc["say"].strip():
+            probs.append(f"cảnh {i}: thiếu lời thoại")
+        if "dur" in sc and not _pos(sc["dur"]):
+            probs.append(f"cảnh {i}: dur phải là số giây > 0, không phải {sc['dur']!r}")
+    return probs
+
+
+def script_from_idea(idea, cfg) -> dict:
+    """Ý tưởng → kịch bản (cùng dạng script.json). Kịch bản dùng id ngoài thư viện → KHÔNG cache,
+    hỏi lại / đổi provider (check=); hỏng hết → LLMError."""
+    from llm import ask_json
+
+    def ok(o):
+        probs = script_problems(o, cfg)
+        if probs:
+            print("  [kịch bản] LLM viết sai, hỏi lại: " + "; ".join(probs[:3]))
+        return not probs
+
+    lib = {"nhan_vat": {cid: {"ten": c.get("name", cid), **({"mo_ta": c["mo_ta"]} if c.get("mo_ta") else {})}
+                        for cid, c in cfg["characters"].items()},
+           "cam_xuc": ["idle", *cfg.get("emotions", {})],
+           "boi_canh": list(cfg["backgrounds"])}
+    user = "THƯ VIỆN:\n" + json.dumps(lib, ensure_ascii=False) + "\n\nÝ TƯỞNG:\n" + idea
+    return ask_json(SCRIPT_SYS, user, temperature=0.7, check=ok)
+
+
+def load_json(p):
+    """JSON viết tay: nhận cả BOM (Notepad / PowerShell 5 lưu "UTF-8" có BOM); lỗi cú pháp báo dòng/cột."""
+    try:
+        with open(rel(p), encoding="utf-8-sig") as f:
+            return json.load(f)
+    except json.JSONDecodeError as e:
+        raise SystemExit(f"{rel(p)}: lỗi JSON ở dòng {e.lineno}, cột {e.colno} ({e.msg})")
+
+
 FONT = os.environ.get("STORY_FONT",
         "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf")
 
@@ -167,13 +244,36 @@ def render_scene(cfg, scene, idx, tmp, W, H):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--chars", default="characters.json")
-    ap.add_argument("--script", default="script.json")
+    ap.add_argument("--script", default=None, help="kịch bản JSON (mặc định script.json; với --idea: nơi lưu kịch bản)")
+    ap.add_argument("--idea", default=None, help="ý tưởng → LLM viết kịch bản từ thư viện nhân vật rồi dựng")
     ap.add_argument("-o","--out", default="reel.mp4")
     ap.add_argument("--music", default="assets/music/bg.wav")
     a = ap.parse_args()
 
-    cfg = json.load(open(rel(a.chars), encoding="utf-8"))
-    scr = json.load(open(rel(a.script), encoding="utf-8"))
+    cfg = load_json(a.chars)
+    if a.idea is not None:
+        if not a.idea.strip():
+            raise SystemExit("--idea trống")
+        if not cfg.get("characters") or not cfg.get("backgrounds"):
+            raise SystemExit(f"{rel(a.chars)} chưa có nhân vật hoặc bối cảnh nào để viết kịch bản")
+        path = rel(a.script or os.path.join("kich_ban", time.strftime("kb_%Y%m%d_%H%M%S.json")))
+        if os.path.exists(path):  # có thể là kịch bản đã sửa tay — không bao giờ ghi đè
+            raise SystemExit(f"{path} đã có. Dựng nó thì bỏ --idea; muốn kịch bản mới thì chọn --script khác.")
+        from llm import LLMError
+        try:
+            scr = script_from_idea(a.idea, cfg)
+        except LLMError as e:
+            raise SystemExit(f"Không viết được kịch bản: {e}")
+        scr.setdefault("resolution", [1080, 1920])
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "x", encoding="utf-8") as f:
+            json.dump(scr, f, ensure_ascii=False, indent=2)
+        print(f"Kịch bản: {path}  (sửa tay rồi dựng lại: --script \"{path}\", bỏ --idea)")
+    else:
+        scr = load_json(a.script or "script.json")
+    probs = script_problems(scr, cfg)
+    if probs:
+        raise SystemExit("Kịch bản không khớp characters.json: " + "; ".join(probs[:5]))
     W, H = scr.get("resolution", [1080,1920])
 
     tmp = tempfile.mkdtemp(prefix="story_")

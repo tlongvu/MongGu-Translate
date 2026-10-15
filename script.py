@@ -1,6 +1,6 @@
 """
 Monggu Translate - Pass 3: Render Video (GPU Accelerated)
-Load ocr_data.json + translation_map.json → inpaint + draw tiếng Việt → xuất video
+Load jobs/<tên>/ocr_data.json + lines.json → inpaint + draw tiếng Việt (theo từng lần xuất hiện) → xuất video
 Sử dụng NVENC (encode), NVDEC (decode), PyTorch CUDA (resize/blur/cvtColor)
 
 Usage:
@@ -22,9 +22,8 @@ if hasattr(sys.stderr, 'reconfigure'):
 import cv2
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
+import contextlib
 import time
-import glob
-import re
 import os
 import json
 import multiprocessing as mp
@@ -38,46 +37,51 @@ except ImportError:
     HAS_TORCH_CUDA = False
 
 from config import (
-    VIDEO_PATH, OUTPUT_PREFIX, TEST_MODE, TEST_FRAMES,
+    VIDEO_PATH, TEST_MODE, TEST_FRAMES,
     NUM_WORKERS, FONT_PATH, TEXT_COLOR, OUTLINE_COLOR, OUTLINE_WIDTH,
     INPAINT_RADIUS, CROP_TOP_RATIO, SUPPRESS_TEXTS, AUTO_SUPPRESS_LATIN_ONLY,
-    OCR_DATA_PATH, TRANSLATION_MAP_PATH,
     TIKTOK_PASS_MODE, PASS_ZOOM_RATIO, PASS_SHARPEN, PASS_COLOR_ADJUST,
     PASS_PORTRAIT_916, SUPPRESS_QR_CODES,
     USE_GPU, USE_NVENC, USE_NVDEC, USE_TORCH_CUDA, GPU_MAX_LOAD,
-    INPAINT_METHOD,
+    INPAINT_METHOD, OUTPUT_HEIGHT, OUTPUT_SHARPEN,
     SUBTITLE_BG_ENABLE, SUBTITLE_BG_COLOR, SUBTITLE_BG_ALPHA,
     SUBTITLE_BG_PAD, SUBTITLE_BG_RADIUS,
 )
+from jobs import open_job, JobError, working_video
+from utils import imread_gray
+from wm_track import load_track
 
 
 # ──────────────────────────────────────────────
 # UTILITY FUNCTIONS
 # ──────────────────────────────────────────────
 
-def get_next_output_path(prefix: str, ext: str = ".mp4") -> str:
-    """Auto-increment: output_final_1.mp4, _2.mp4, ..."""
-    existing = glob.glob(f"{prefix}_*.{ext.lstrip('.')}")
-    nums = []
-    for f in existing:
-        m = re.search(rf"{re.escape(prefix)}_(\d+)\.{ext.lstrip('.')}", f)
-        if m:
-            nums.append(int(m.group(1)))
-    next_num = max(nums) + 1 if nums else 1
-    return f"{prefix}_{next_num}{ext}"
+def lines_mismatch(lines: list, text_segments: list) -> bool:
+    """lines.json phải được dịch từ ĐÚNG ocr_data hiện tại: đủ dòng, mỗi dòng cùng khung thời gian với segment
+    cùng id. OCR chạy lại sau khi dịch → số thứ tự segment xê dịch → không chặn thì cả video lệch phụ đề."""
+    if len(lines) != len(text_segments):
+        return True
+    for l in lines:
+        i = l.get("id") if isinstance(l, dict) else None
+        if not isinstance(i, int) or not 0 <= i < len(text_segments):
+            return True
+        seg = text_segments[i]
+        if (l.get("start"), l.get("end")) != (int(seg.get("start_frame", 0)),
+                                              int(seg.get("end_frame", seg.get("start_frame", 0)))):
+            return True
+    return False
 
 
-def create_text_mask(frame_shape, boxes, expand_ratio=1.25):
-    """Binary mask over all text regions for inpainting."""
-    mask = np.zeros(frame_shape[:2], dtype=np.uint8)
-    for box in boxes:
-        pts = np.array(box, dtype=np.int32)
-        center = pts.mean(axis=0).astype(np.float32)
-        pts_exp = (center + (pts.astype(np.float32) - center) * expand_ratio).astype(np.int32)
-        pts_exp[:, 0] = np.clip(pts_exp[:, 0], 0, frame_shape[1] - 1)
-        pts_exp[:, 1] = np.clip(pts_exp[:, 1], 0, frame_shape[0] - 1)
-        cv2.fillPoly(mask, [pts_exp], 255)
-    return mask
+def video_mismatch(ocr_data: dict, width: int, height: int, fps: float, n_frames: int):
+    """So video sắp render với ocr_data. Trả về câu mô tả chỗ lệch, hoặc None nếu khớp.
+    Video DÀI hơn dữ liệu vẫn cho qua (dữ liệu OCR --test chỉ phủ đoạn đầu)."""
+    if (width, height) != (ocr_data["width"], ocr_data["height"]):
+        return f"kích thước {width}x{height} ≠ {ocr_data['width']}x{ocr_data['height']}"
+    if abs(fps - ocr_data["fps"]) > 0.5:
+        return f"fps {fps:.2f} ≠ {ocr_data['fps']:.2f}"
+    if 0 < n_frames < ocr_data["total_frames"] - ocr_data["fps"]:
+        return f"video chỉ có {n_frames} frame, dữ liệu OCR cần {ocr_data['total_frames']}"
+    return None
 
 
 @lru_cache(maxsize=128)
@@ -328,6 +332,51 @@ def _inpaint_roi(roi_frame, roi_mask):
     if method == "ns":
         return cv2.inpaint(roi_frame, roi_mask, INPAINT_RADIUS, cv2.INPAINT_NS)
     return cv2.inpaint(roi_frame, roi_mask, INPAINT_RADIUS, cv2.INPAINT_TELEA)
+
+
+def remove_wm(frame, center, mask, pad=10):
+    """Xóa watermark chạy: đặt mask (tâm = center) lên frame rồi inpaint theo INPAINT_METHOD.
+    ROI rộng hơn mask `pad` px để inpaint có ngữ cảnh; mask sát / lố mép khung thì xén. Sửa frame tại chỗ."""
+    mh, mw = mask.shape
+    fh, fw = frame.shape[:2]
+    x0, y0 = int(round(center[0] - mw / 2)), int(round(center[1] - mh / 2))
+    rx0, ry0 = max(0, x0 - pad), max(0, y0 - pad)
+    rx1, ry1 = min(fw, x0 + mw + pad), min(fh, y0 + mh + pad)
+    mx0, my0 = max(x0, rx0), max(y0, ry0)
+    mx1, my1 = min(x0 + mw, rx1), min(y0 + mh, ry1)
+    if mx1 <= mx0 or my1 <= my0:
+        return frame
+    roi_mask = np.zeros((ry1 - ry0, rx1 - rx0), np.uint8)
+    roi_mask[my0 - ry0:my1 - ry0, mx0 - rx0:mx1 - rx0] = mask[my0 - y0:my1 - y0, mx0 - x0:mx1 - x0]
+    frame[ry0:ry1, rx0:rx1] = _inpaint_roi(frame[ry0:ry1, rx0:rx1], roi_mask)
+    return frame
+
+
+def output_size(w: int, h: int) -> tuple:
+    """Cỡ video ra: nguồn thấp hơn OUTPUT_HEIGHT thì phóng lên (giữ tỉ lệ, cạnh chẵn cho H.264); không thu nhỏ."""
+    if not OUTPUT_HEIGHT or h >= OUTPUT_HEIGHT:
+        return w, h
+    return int(round(w * OUTPUT_HEIGHT / h / 2)) * 2, OUTPUT_HEIGHT
+
+
+def upscale(frame, out_w: int, out_h: int):
+    """Phóng Lanczos rồi làm nét nhẹ (OUTPUT_SHARPEN) — đỡ mờ khi kéo 576p / 720p lên 1080p."""
+    big = cv2.resize(frame, (out_w, out_h), interpolation=cv2.INTER_LANCZOS4)
+    if OUTPUT_SHARPEN > 0:
+        big = cv2.addWeighted(big, 1 + OUTPUT_SHARPEN, cv2.GaussianBlur(big, (0, 0), 1.2), -OUTPUT_SHARPEN, 0)
+    return big
+
+
+def load_wm_track(job, total_frames: int):
+    """Vị trí watermark chạy ({frame: (x, y)}) + mask từ wm_track.py; ({}, None) nếu không có / không dùng được."""
+    pos, _ = load_track(job.wm_track, total_frames)
+    if not pos:
+        return {}, None
+    mask = imread_gray(job.wm_mask)
+    if mask is None:
+        print(f"  [WARN] Thiếu {job.wm_mask} — bỏ qua xóa watermark chạy.")
+        return {}, None
+    return pos, mask
 
 
 def _gpu_resize(frame, new_w, new_h):
@@ -623,7 +672,7 @@ def merge_nearby_detections(detections, y_threshold=5, x_gap_threshold=80):
 
 def _build_segment_index(text_segments: list, start_frame: int, end_frame: int,
                           translation_map: dict, extend_frames: int = 5,
-                          ocr_interval_frames: int = 0) -> dict:
+                          ocr_interval_frames: int = 0, vi_for_seg: dict = None) -> dict:
     """
     Build frame→[{bbox, text, vi_text, box_height}] index từ text_segments.
     Mỗi frame nhận bbox được interpolate tuyến tính từ keyframe_bboxes.
@@ -671,14 +720,14 @@ def _build_segment_index(text_segments: list, start_frame: int, end_frame: int,
                 if limits_first[1] >= limits_second[0]:
                     if gap <= 1:
                         # Ranh giới quá sát, không cho mở rộng ở điểm chạm
-                        limits_first[1] = first_seg['end_frame']
-                        limits_second[0] = second_seg['start_frame']
+                        limits_first[1] = min(limits_first[1], first_seg['end_frame'])
+                        limits_second[0] = max(limits_second[0], second_seg['start_frame'])
                     else:
-                        # Chia đôi khoảng trống còn lại cho hai bên
+                        # Chia đôi khoảng trống còn lại cho hai bên (chỉ thu hẹp, không nới lại)
                         ext_first = (gap - 1) // 2
                         ext_second = gap - 1 - ext_first
-                        limits_first[1] = first_seg['end_frame'] + ext_first
-                        limits_second[0] = second_seg['start_frame'] - ext_second
+                        limits_first[1] = min(limits_first[1], first_seg['end_frame'] + ext_first)
+                        limits_second[0] = max(limits_second[0], second_seg['start_frame'] - ext_second)
 
     # 3. Tiến hành phân bổ segment vào index của từng frame dựa trên giới hạn đã tối ưu
     for seg in text_segments:
@@ -688,7 +737,8 @@ def _build_segment_index(text_segments: list, start_frame: int, end_frame: int,
             continue
 
         zh_text = seg['text']
-        vi_text = translation_map.get(zh_text, "")
+        # Bản dịch theo TỪNG LẦN XUẤT HIỆN (id segment); không có id → tra theo chữ (tương thích)
+        vi_text = (vi_for_seg or {}).get(seg.get('id'), translation_map.get(zh_text, ""))
         keyframe_bboxes = seg.get('keyframe_bboxes', [])
 
         for fn in range(max(sf, start_frame), min(ef + 1, end_frame)):
@@ -751,16 +801,19 @@ def process_chunk(args):
      video_path, temp_output, font_path,
      fps, width, height,
      ocr_interval_frames, translation_map,
-     frame_detections_for_chunk, text_segments_for_chunk) = args
+     frame_detections_for_chunk, text_segments_for_chunk, vi_for_seg,
+     wm_pos, wm_mask) = args
 
     gpu_mode = USE_GPU and USE_NVENC
     print(f"  [Worker {chunk_idx}] Render {'(GPU+NVENC) ' if gpu_mode else ''}{'(Pass Mode) ' if TIKTOK_PASS_MODE else ''}frames {start_frame}-{end_frame}...")
 
     cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise RuntimeError(f"[Worker {chunk_idx}] Không mở được video: {video_path}")
     cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
 
-    # Nếu chạy 9:16 nền mờ, output resolution thay đổi
-    out_w, out_h = width, height
+    # Nếu chạy 9:16 nền mờ, output resolution thay đổi; không thì phóng lên OUTPUT_HEIGHT (Full HD)
+    out_w, out_h = (width, height) if TIKTOK_PASS_MODE else output_size(width, height)
     if TIKTOK_PASS_MODE and PASS_PORTRAIT_916:
         out_w, out_h = 1080, 1920
 
@@ -775,9 +828,9 @@ def process_chunk(args):
             '-i', '-',
             '-c:v', 'h264_nvenc',
             '-pix_fmt', 'yuv420p',     # Force correct color conversion
-            '-preset', 'p4',           # Balanced speed/quality
+            '-preset', 'p6',           # Chậm hơn p4 một chút, nét hơn
             '-rc', 'vbr',              # Variable bitrate
-            '-cq', '23',               # Quality level
+            '-cq', '19',               # Chất lượng (thấp = nét hơn, file to hơn; trước là 23 — user thấy mờ)
             '-gpu', '0',
             temp_output
         ]
@@ -800,7 +853,7 @@ def process_chunk(args):
     # tránh text Trung nhấp nháy trước khi inpaint kịp bắt đầu.
     segment_index = _build_segment_index(
         text_segments_for_chunk, start_frame, end_frame, translation_map,
-        ocr_interval_frames=ocr_interval_frames,
+        ocr_interval_frames=ocr_interval_frames, vi_for_seg=vi_for_seg,
     )
 
     # Fallback: keyframe-based lookup (cho các frame không có segment)
@@ -817,6 +870,8 @@ def process_chunk(args):
         ret, frame = cap.read()
         if not ret:
             break
+        if wm_mask is not None and frame_num in wm_pos:     # watermark chạy (wm_track.py): xóa ở mọi frame
+            frame = remove_wm(frame, wm_pos[frame_num], wm_mask)
 
         # ── Priority 1: Actual keyframe (exact bbox, chính xác nhất) ──
         frame_str = str(frame_num)
@@ -928,7 +983,11 @@ def process_chunk(args):
                 frame[y1:y2, x1:x2] = inpainted_roi
 
         # ── TIKTOK PASS MODE: Transformations ──
-        x_off, y_off, content_scale = 0, 0, 1.0
+        x_off, y_off, content_scale, text_scale = 0, 0, 1.0, 1.0
+        if not TIKTOK_PASS_MODE and (out_w, out_h) != (frame.shape[1], frame.shape[0]):
+            # Phóng Full HD: sau khi xóa chữ / watermark (ở cỡ nguồn), trước khi vẽ phụ đề (vẽ thẳng ở cỡ ra cho nét)
+            content_scale = text_scale = out_h / frame.shape[0]
+            frame = upscale(frame, out_w, out_h)
         if TIKTOK_PASS_MODE:
             # 1. Phát hiện và xóa mã QR
             if SUPPRESS_QR_CODES and qr_detector:
@@ -966,9 +1025,9 @@ def process_chunk(args):
             
             if drawable:
                 # ── Bước 1: Build "render jobs" cho từng cụm chữ vẽ được ──
-                LINE_SPACING = 12
-                MARGIN = 8        # khoảng cách an toàn giữa 2 cụm chữ (px)
-                MIN_SIZE = 22
+                LINE_SPACING = round(12 * text_scale)
+                MARGIN = round(8 * text_scale)        # khoảng cách an toàn giữa 2 cụm chữ (px)
+                MIN_SIZE = round(22 * text_scale)
 
                 jobs = []
                 
@@ -994,7 +1053,7 @@ def process_chunk(args):
                     max_w = max(max_w, 150)
                     
                     # Cỡ chữ tỷ lệ theo frame mới
-                    pref_size = max(MIN_SIZE, min(int(draw_box_h * 0.8), 36))
+                    pref_size = max(MIN_SIZE, min(int(draw_box_h * 0.8), round(36 * text_scale)))
 
                     start_y = max(0, draw_y - 2)
                     jobs.append({
@@ -1026,7 +1085,7 @@ def process_chunk(args):
                         smart_draw_text_on_pil(
                             draw, j['text'], j['cx'], j['y'],
                             font_path, j['size'], j['max_w'],
-                            TEXT_COLOR, OUTLINE_COLOR, OUTLINE_WIDTH,
+                            TEXT_COLOR, OUTLINE_COLOR, max(1, round(OUTLINE_WIDTH * text_scale)),
                             out_h, out_w, min_size=MIN_SIZE,
                             line_spacing=LINE_SPACING, align="center",
                         )
@@ -1037,9 +1096,8 @@ def process_chunk(args):
         if ffmpeg_proc and ffmpeg_proc.stdin:
             try:
                 ffmpeg_proc.stdin.write(frame.tobytes())
-            except BrokenPipeError:
-                print(f"  [Worker {chunk_idx}] ERROR: NVENC pipe broken")
-                break
+            except OSError:
+                raise RuntimeError(f"[Worker {chunk_idx}] ffmpeg/NVENC dừng giữa chừng (pipe vỡ) — xem lỗi ffmpeg in ở trên")
         elif out:
             out.write(frame)
         
@@ -1055,7 +1113,8 @@ def process_chunk(args):
     cap.release()
     if ffmpeg_proc:
         ffmpeg_proc.stdin.close()
-        ffmpeg_proc.wait()
+        if ffmpeg_proc.wait() != 0:
+            raise RuntimeError(f"[Worker {chunk_idx}] ffmpeg lỗi (mã {ffmpeg_proc.returncode}) khi encode {temp_output}")
     if out:
         out.release()
     elapsed = time.time() - t0
@@ -1069,10 +1128,12 @@ def process_chunk(args):
 
 def concatenate_videos(temp_files, output_path):
     """Concatenate temp chunks using ffmpeg (fast stream copy), fallback to cv2."""
-    list_file = "_concat_list.txt"
-    with open(list_file, "w") as f:
+    # Đặt cạnh file output (thư mục job); UTF-8 vì ffmpeg đọc concat list theo UTF-8 và tên job có thể có dấu
+    list_file = os.path.join(os.path.dirname(os.path.abspath(output_path)), "_concat_list.txt")
+    with open(list_file, "w", encoding="utf-8") as f:
         for tf in temp_files:
-            f.write(f"file '{os.path.abspath(tf)}'\n")
+            # Cú pháp concat của ffmpeg: dấu ' trong đường dẫn phải viết thành '\'' (tên video có dấu nháy)
+            f.write("file '" + os.path.abspath(tf).replace("'", "'\\''") + "'\n")
 
     cmd = ["ffmpeg", "-y", "-f", "concat", "-safe", "0",
            "-i", list_file, "-c", "copy", output_path]
@@ -1143,24 +1204,48 @@ if __name__ == "__main__":
     # ── Load pre-computed data ──
     print("\n[1/4] Loading OCR data + translation map...")
 
-    if not os.path.exists(OCR_DATA_PATH):
-        print(f"  [ERROR] Chưa có {OCR_DATA_PATH}!")
-        print(f"  Hãy chạy: python ocr_pass.py")
-        exit(1)
+    try:
+        job = open_job(args.input)
+    except JobError as e:
+        print(f"  [ERROR] {e}")
+        sys.exit(1)
+    if not os.path.exists(job.ocr_data):
+        print(f"  [ERROR] Chưa có OCR cho {job.name} — hãy chạy: python ocr_pass.py --input \"{args.input}\"")
+        sys.exit(1)
+    if not os.path.exists(job.lines):
+        print(f"  [ERROR] Chưa có bản dịch cho {job.name} — hãy chạy: python translate_pass.py --input \"{args.input}\"")
+        sys.exit(1)
 
-    if not os.path.exists(TRANSLATION_MAP_PATH):
-        print(f"  [ERROR] Chưa có {TRANSLATION_MAP_PATH}!")
-        print(f"  Hãy chạy: python translate_pass.py")
-        exit(1)
-
-    with open(OCR_DATA_PATH, "r", encoding="utf-8") as f:
+    with open(job.ocr_data, "r", encoding="utf-8") as f:
         ocr_data = json.load(f)
+    if ocr_data.get("complete") is False:
+        print("  [ERROR] OCR của video này chưa chạy xong (bị ngắt?) — chạy tiếp OCR rồi dịch lại.")
+        sys.exit(1)
 
-    with open(TRANSLATION_MAP_PATH, "r", encoding="utf-8") as f:
-        translation_map = json.load(f)
+    try:
+        with open(job.lines, "r", encoding="utf-8") as f:
+            lines = json.load(f)
+    except ValueError as e:
+        print(f"  [ERROR] {job.lines} sai cú pháp JSON ({e}) — sửa lại file rồi render lại.")
+        sys.exit(1)
 
     frame_detections = ocr_data["frame_detections"]
     text_segments = ocr_data.get("text_segments", [])  # Có thể thiếu nếu ocr_data cũ
+
+    # Bản dịch theo TỪNG LẦN XUẤT HIỆN: id segment → vi_sua (sửa tay) hoặc vi.
+    # translation_map (chữ OCR thô → bản dịch lần xuất hiện đầu) chỉ dùng cho chữ thô không thuộc segment nào.
+    if lines_mismatch(lines, text_segments):
+        print(f"  [ERROR] lines.json không khớp ocr_data.json (OCR đã chạy lại sau khi dịch?) — "
+              f"chạy lại: python translate_pass.py --input \"{args.input}\"")
+        sys.exit(1)
+    for i, seg in enumerate(text_segments):
+        seg["id"] = i
+    vi_for_seg, translation_map = {}, {}
+    for l in sorted(lines, key=lambda l: l["start"]):
+        vi = l["vi_sua"] if isinstance(l.get("vi_sua"), str) else (l.get("vi") or "")  # vi_sua "" = cố ý bỏ phụ đề
+        vi_for_seg[l["id"]] = vi
+        if l["id"] < len(text_segments):
+            translation_map.setdefault(text_segments[l["id"]]["text"], vi)
     fps = ocr_data["fps"]
     width = ocr_data["width"]
     height = ocr_data["height"]
@@ -1170,30 +1255,48 @@ if __name__ == "__main__":
     if args.test:
         total_frames = min(total_frames, TEST_FRAMES)
         print(f"  [TEST MODE] Gioi han {TEST_FRAMES} frames")
+    elif ocr_data.get("test_mode"):
+        print(f"  [WARN] Dữ liệu OCR là của lần chạy --test (chỉ {total_frames} frame đầu) → video ra sẽ ngắn. "
+              f"Chạy lại OCR không --test để có video đầy đủ.")
 
     print(f"  OCR detections : {len(frame_detections)} keyframes")
     print(f"  Text segments  : {len(text_segments)} tracked appearances")
     if not text_segments:
         print(f"  [WARN] Không có text_segments! Hãy chạy lại ocr_pass.py để tái tạo.")
-    print(f"  Translations   : {len(translation_map)} entries")
+    print(f"  Translations   : {len(lines)} dòng (lines.json)")
     print(f"  Video          : {width}x{height} @ {fps:.1f}fps, {total_frames} frames")
 
     # ── Analyze video (get path) ──
     print(f"\n[2/4] Chuan bi render...")
 
-    # Nếu OCR đã convert video (vd: 60fps → 25fps), dùng video đã convert để render
-    # (frame indices trong ocr_data.json tương ứng với video đã convert)
-    converted_video = ocr_data.get("video", "")
-    original_video = ocr_data.get("original_video", args.input)
+    # OCR đã convert fps (vd 60 → 25) thì render trên bản convert trong job: frame index trong ocr_data là của nó.
+    # Tiếng luôn lấy từ video gốc (bản convert đã bỏ tiếng).
+    video_path = working_video(job, ocr_data, args.input)
+    audio_source = args.input
+    if video_path != args.input and not os.path.exists(video_path):
+        print(f"  [ERROR] Thiếu video đã convert fps: {video_path} (bị xóa?) — chạy lại OCR để tạo lại.")
+        sys.exit(1)
 
-    if converted_video and converted_video != original_video and os.path.exists(converted_video):
-        video_path = converted_video
-        audio_source = original_video if os.path.exists(original_video) else args.input
-    else:
-        video_path = args.input
-        audio_source = args.input
+    # Chặn render nhầm video: dữ liệu OCR phải khớp video sắp render
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        print(f"  [ERROR] Không mở được video: {video_path}")
+        sys.exit(1)
+    problem = video_mismatch(ocr_data, int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)),
+                             int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)),
+                             cap.get(cv2.CAP_PROP_FPS), int(cap.get(cv2.CAP_PROP_FRAME_COUNT)))
+    cap.release()
+    if problem:
+        print(f"  [ERROR] Video '{video_path}' không khớp dữ liệu OCR: {problem}")
+        print(f"  ocr_data.json là của '{ocr_data.get('original_video', '?')}' — hãy chạy lại OCR cho video này.")
+        sys.exit(1)
 
-    output_video = get_next_output_path(OUTPUT_PREFIX)
+    # Watermark chạy (wm_track.py): vị trí ở từng frame + mask nét chữ → xóa ở mọi frame
+    wm_pos, wm_mask = load_wm_track(job, ocr_data["total_frames"])
+    if wm_mask is not None:
+        print(f"  Watermark chạy : xóa ở {len(wm_pos)} frame")
+
+    output_video = job.output
     num_workers = args.workers
 
     print(f"  Input  : {video_path}")
@@ -1210,7 +1313,7 @@ if __name__ == "__main__":
         end = total_frames if i == num_workers - 1 else start + chunk_size
         chunks.append((start, end))
 
-    temp_files = [f"_temp_chunk_{i}.mp4" for i in range(num_workers)]
+    temp_files = [os.path.join(job.dir, f"_temp_chunk_{i}.mp4") for i in range(num_workers)]
 
     # Split frame_detections per worker chunk
     chunk_detections = []
@@ -1230,6 +1333,8 @@ if __name__ == "__main__":
         ]
         chunk_segments.append(chunk_seg)
 
+    chunk_wm = [{f: p for f, p in wm_pos.items() if s <= f < e} for s, e in chunks]
+
     print(f"\n[3/4] Rendering {num_workers} chunks in parallel...")
     for i, (s, e) in enumerate(chunks):
         det_count = len(chunk_detections[i])
@@ -1241,63 +1346,78 @@ if __name__ == "__main__":
          video_path, temp_files[i],
          FONT_PATH, fps, width, height,
          ocr_interval_frames, translation_map,
-         chunk_detections[i], chunk_segments[i])
+         chunk_detections[i], chunk_segments[i], vi_for_seg,
+         chunk_wm[i], wm_mask)
         for i in range(num_workers)
     ]
 
     wall_start = time.time()
+    # File trung gian nằm trong job; video ra CHỈ được thay ở bước cuối (render lỗi giữa chừng không làm
+    # mất video tốt của lần trước); luôn dọn file tạm, kể cả khi lỗi / Ctrl+C.
+    staging = os.path.join(job.dir, "_render_tmp.mp4")
+    staging_audio = os.path.join(job.dir, "_render_tmp_audio.mp4")
 
-    with mp.Pool(processes=num_workers) as pool:
-        results = pool.map(process_chunk, worker_args)
-
-    wall_elapsed = time.time() - wall_start
-    print(f"\n  All workers finished in {wall_elapsed:.1f}s")
-
-    # ── Concatenate ──
-    print(f"\n[4/4] Concatenating -> {output_video}...")
-    sorted_results = sorted(results, key=lambda r: r[0])
-    ordered_temps = [r[1] for r in sorted_results]
-
-    concatenate_videos(ordered_temps, output_video)
-
-    # ── Mux audio từ video gốc ──
-    if args.no_audio:
-        print(f"\n[5/5] Bỏ qua mux audio (--no-audio)")
-        print(f"  → Dùng audio_tools.py để xử lý audio riêng:")
-        print(f"    python audio_tools.py extract {video_path}")
-        print(f"    python audio_tools.py mux {output_video} <audio_file>")
-    else:
-        print(f"\n[5/5] Mux audio tu video goc...")
-        video_no_audio = output_video
-        video_with_audio = output_video.replace(".mp4", "_audio.mp4")
-        mux_cmd = [
-            "ffmpeg", "-y",
-            "-i", video_no_audio,      # Video đã render (không có audio)
-            "-i", audio_source,         # Video gốc (lấy audio)
-            "-c:v", "copy",             # Copy video stream (không re-encode)
-            "-c:a", "aac",              # Encode audio AAC
-            "-map", "0:v:0",            # Video từ file đầu
-            "-map", "1:a:0",            # Audio từ file gốc
-            "-shortest",                # Cắt theo stream ngắn nhất
-            video_with_audio
-        ]
+    def _publish(src, dst):
         try:
-            result = subprocess.run(mux_cmd, capture_output=True, text=True, timeout=300)
-            if result.returncode == 0:
-                # Thay thế file không audio bằng file có audio
-                os.remove(video_no_audio)
-                os.rename(video_with_audio, output_video)
-                print(f"  Audio mux OK")
-            else:
-                print(f"  [WARN] Mux audio that bai: {result.stderr[:200]}")
-                print(f"  Video output van su dung duoc (khong co audio)")
-        except Exception as e:
-            print(f"  [WARN] ffmpeg khong kha dung cho audio mux: {e}")
+            os.replace(src, dst)
+        except PermissionError:
+            print(f"  [ERROR] Không ghi đè được {dst} — file đang mở ở chương trình khác (trình phát video?). "
+                  f"Đóng lại rồi chạy lại render.")
+            sys.exit(1)
 
-    # Cleanup temp files
-    for tf in temp_files:
-        if os.path.exists(tf):
-            os.remove(tf)
+    mux_ok = True
+    try:
+        with mp.Pool(processes=num_workers) as pool:
+            results = pool.map(process_chunk, worker_args)
+        print(f"\n  All workers finished in {time.time() - wall_start:.1f}s")
+
+        # ── Concatenate ──
+        print(f"\n[4/4] Concatenating -> {output_video}...")
+        ordered_temps = [r[1] for r in sorted(results, key=lambda r: r[0])]
+        concatenate_videos(ordered_temps, staging)
+
+        # ── Mux audio từ video gốc ──
+        if args.no_audio:
+            print(f"\n[5/5] Bỏ qua mux audio (--no-audio)")
+            print(f"  → Dùng audio_tools.py để xử lý audio riêng:")
+            print(f"    python audio_tools.py extract {video_path}")
+            print(f"    python audio_tools.py mux {output_video} <audio_file>")
+            _publish(staging, output_video)
+        else:
+            print(f"\n[5/5] Mux audio tu video goc...")
+            mux_cmd = [
+                "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+                "-i", staging,              # Video đã render (không có audio)
+                "-i", audio_source,         # Video gốc (lấy audio)
+                "-c:v", "copy",             # Copy video stream (không re-encode)
+                "-c:a", "aac",              # Encode audio AAC
+                "-map", "0:v:0",            # Video từ file đầu
+                "-map", "1:a:0?",           # Audio từ file gốc
+                "-shortest",                # Cắt theo stream ngắn nhất
+                staging_audio
+            ]
+            try:
+                result = subprocess.run(mux_cmd, capture_output=True, text=True, timeout=300)
+                if result.returncode == 0:
+                    _publish(staging_audio, output_video)
+                    print(f"  Audio mux OK")
+                else:
+                    print(f"  [ERROR] Mux audio thất bại: {result.stderr[:200]}")
+                    mux_ok = False
+            except Exception as e:
+                print(f"  [ERROR] ffmpeg không khả dụng cho audio mux: {e}")
+                mux_ok = False
+            if not mux_ok:
+                silent = os.path.splitext(output_video)[0] + "_khong_tieng.mp4"
+                _publish(staging, silent)
+                print(f"  Video (không tiếng) ở: {silent} — video ra của lần trước (nếu có) giữ nguyên")
+    finally:
+        for tf in temp_files + [staging, staging_audio]:
+            with contextlib.suppress(OSError):
+                os.remove(tf)
+
+    if not mux_ok:
+        sys.exit(1)
 
     total_time = time.time() - wall_start
     print(f"\n{'=' * 55}")

@@ -15,7 +15,6 @@ load_dotenv(os.path.join(_PROJECT_ROOT, ".env"))
 # VIDEO
 # ──────────────────────────────────────────────
 VIDEO_PATH = "input.mp4"
-OUTPUT_PREFIX = "output_final"
 TEST_MODE = False
 TEST_FRAMES = 500
 
@@ -28,6 +27,10 @@ TARGET_FPS = 25                 # Convert video về fps này trước OCR (0 = 
 OCR_CONFIDENCE_THRESHOLD = 0.70  # Lọc text có confidence thấp
 OCR_RESIZE_FACTOR = 0.5         # Downscale trước khi OCR (tăng tốc CPU)
 CROP_TOP_RATIO = 0.0            # 0.0 = scan toàn bộ frame
+# PaddleOCR (paddle 2.6 CPU) rò ~4 MB mỗi frame OCR và không trả lại trong tiến trình (đo: +1,76 GB / 400 frame;
+# tạo lại engine cũng không trả) → OCR theo đợt: mỗi tiến trình con quét tối đa chừng này frame rồi lưu + thoát,
+# tiến trình mới chạy tiếp với RAM sạch. Đo thật (Douyin 960×720): mỗi đợt ~2 phút, đỉnh 3–4,6 GB. Máy ít RAM thì giảm.
+OCR_CHUNK_SCANS = 600
 
 # ── Scene-diff skip: bỏ qua OCR các frame gần như giống hệt frame trước ──
 # Phụ đề thường đứng yên 1-3s → không cần OCR lại 25-75 lần cho cùng 1 câu.
@@ -60,15 +63,9 @@ for i in range(1, 20):
     if _key_val and _key_val not in GEMINI_API_KEYS:
         GEMINI_API_KEYS.append(_key_val)
 
-GEMINI_API_KEY = GEMINI_API_KEYS[0] if GEMINI_API_KEYS else ""
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
-FREEMODEL_API_KEY = os.getenv("FREEMODEL_API_KEY", "")
-FREEMODEL_BASE_URL = os.getenv("FREEMODEL_BASE_URL", "https://api.freemodel.dev/v1")
-FREEMODEL_MODEL = os.getenv("FREEMODEL_MODEL", "gpt-4o-mini")
-NVIDIA_API_KEY = os.getenv("NVIDIA_API_KEY", "")
-NVIDIA_MODEL = os.getenv("NVIDIA_MODEL", "nvidia/nemotron-mini-4b-instruct")
-GLOSSARY_PATH = os.path.join(_SCRIPT_DIR, "glossary.json")
+GEMINI_MODEL = "gemini-2.5-flash"
+DEEPSEEK_MODEL = "deepseek-chat"
 
 NORMALIZATION_SYSTEM_PROMPT = """Bạn là hệ thống tiền xử lý phụ đề video Trung Quốc.
 
@@ -78,11 +75,17 @@ HƯỚNG DẪN:
 1. LỌC RÁC:
 - Định dạng Latin/Ký tự lặp vô nghĩa (vd "meme", "neme", "ADIATN").
 - Text quá ngắn (<=1 ký tự) ko có nghĩa (Ngoại trừ: "我", "你", "他"...).
-- Watermark.
+- Watermark, tên kênh, nhãn phiên bản — kể cả khi lẫn chữ Trung (vd "猫meme的小日常", "eme版）", "猫mel", "原创@哈加密").
+- Watermark hay bị OCR đọc thành nhiều biến thể / mảnh vụn (vd "原创@哈加", "原创回咖", "哈加") → mọi biến thể, mảnh của nó đều là rác.
+- NHƯNG thoại có chen tiếng Anh/tiếng lóng KHÔNG phải rác (vd "就是这个feel", "多惬意，skr!", thoại chỉ một từ "yes", "OK") → giữ nguyên.
+- Câu thoại / chú thích / nhãn tên bị OCR đọc sai vài chữ, mất đầu hoặc cụt đuôi VẪN LÀ NỘI DUNG → sửa theo mục 2, KHÔNG gán "". Nhãn chức danh trong ngoặc (vd "（班主任）") cũng giữ.
 - ĐỐI VỚI TEXT RÁC: Gán value = "" (chuỗi rỗng).
 
 2. NORMALIZE TEXT (Sửa lỗi OCR):
 - Sửa lặp chữ vô lý: "飞飞行" -> "飞行", "楷悄" -> "悄悄".
+- Sửa chữ bị đọc nhầm thành chữ na ná khi nghĩa câu cho thấy rõ: "他己经走了" -> "他已经走了", "班主壬来了" -> "班主任来了".
+- Bỏ ký tự lạc ở đầu/cuối: "丨你去哪儿" -> "你去哪儿".
+- Không chắc sửa thế nào → GIỮ NGUYÊN chữ gốc, đừng xóa.
 
 YÊU CẦU OUTPUT MỚI (BẮT BUỘC):
 Trả về MỘT JSON Object (Dictionary).
@@ -97,30 +100,6 @@ OUTPUT: {
 }
 KHÔNG giải thích. CHỈ trả về duy nhất JSON Object."""
 
-# Prompt cho Deepseek
-TRANSLATION_GENRE = "tình cảm gia đình / hài hước tuổi thơ"
-TRANSLATION_SYSTEM_PROMPT = """Bạn là dịch giả chuyên nghiệp phụ đề phim Trung Quốc sang tiếng Việt.
-Thể loại phim: {genre}
-
-Ngữ cảnh video: Lời kể chuyện hồi ký của một người về tuổi thơ của mình. Đoạn đầu có cảnh người cha đánh người con vì nghịch điện thoại.
-LƯU Ý XƯNG HÔ (RẤT QUAN TRỌNG): 
-- Khi dùng giọng kể chuyện (narrative) hoặc nhãn dán nhân vật đứng đơn lẻ (VD: "我"), BẮT BUỘC xưng là "Tôi".
-- Chỉ xưng là "Con" khi đó là câu thoại nói chuyện trực tiếp với Bố/Mẹ/Ông/Bà (VD: "bố ơi, con xin lỗi").
-
-Bảng tên riêng (BẮT BUỘC sử dụng đúng):
-{glossary}
-
-Quy tắc dịch:
-1. Dịch tự nhiên, đúng ngữ cảnh phim, KHÔNG dịch word-by-word
-2. Giữ nguyên tên riêng theo bảng glossary ở trên
-3. Giữ giọng văn phù hợp thể loại phim (kịch tính, trang trọng khi cần)
-4. Nếu là nhãn tên nhân vật (1-3 từ, ví dụ "姜姐", "王建成"), chỉ cần dịch tên
-5. Câu ngắn 1-2 từ → dịch ngắn gọn, không thêm thắt
-
-Tôi sẽ gửi một JSON array các câu tiếng Trung theo thứ tự xuất hiện trong phim.
-Hãy trả về một JSON array các câu tiếng Việt tương ứng, ĐÚNG THỨ TỰ, ĐÚNG SỐ LƯỢNG.
-CHỈ trả về JSON array, không thêm giải thích."""
-
 # ──────────────────────────────────────────────
 # RENDERING
 # ──────────────────────────────────────────────
@@ -130,9 +109,13 @@ OUTLINE_COLOR = (0, 0, 0)       # Đen
 OUTLINE_WIDTH = 2
 INPAINT_RADIUS = 4              # Giảm từ 7 → 4 (nhanh hơn, vẫn clean tốt)
 INPAINT_METHOD = "telea"        # "telea" | "ns" (chất lượng) | "fill" (siêu nhanh: blur fill)
+# Video ra: nguồn thấp hơn thì phóng lên chiều cao này (giữ tỉ lệ; 768×576 / 960×720 → 1440×1080). Phóng SAU khi xóa
+# chữ / watermark, TRƯỚC khi vẽ phụ đề → phụ đề vẽ thẳng ở 1080p, sắc nét. 0 = giữ nguyên cỡ nguồn.
+OUTPUT_HEIGHT = 1080
+OUTPUT_SHARPEN = 0.3            # làm nét nhẹ sau khi phóng (0 = tắt; cao quá làm lộ nhiễu nén của nguồn)
 
 # ── Nền mờ bán trong suốt sau chữ (plate) — tăng độ đọc trên nền sáng/nhiễu ──
-SUBTITLE_BG_ENABLE = True        # Vẽ hộp nền mờ phía sau mỗi cụm phụ đề
+SUBTITLE_BG_ENABLE = False       # Vẽ hộp nền mờ phía sau mỗi cụm phụ đề
 SUBTITLE_BG_COLOR = (0, 0, 0)    # Màu nền (RGB)
 SUBTITLE_BG_ALPHA = 120          # Độ mờ 0-255 (0 = trong suốt, 255 = đặc)
 SUBTITLE_BG_PAD = 8              # Đệm quanh chữ (px)
@@ -224,6 +207,11 @@ SUPPRESS_TEXTS = [
 AUTO_SUPPRESS_LATIN_ONLY = True
 
 # ──────────────────────────────────────────────
+# XÓA WATERMARK CHẠY (wm_track.py — pipeline tự chạy sau OCR)
+# ──────────────────────────────────────────────
+WM_TRACK = True                  # False = không dò/xóa watermark chạy (tắt cho 1 video qua MONGGU_CONFIG)
+
+# ──────────────────────────────────────────────
 # TIKTOK PASS MODE (Bypass detection)
 # ──────────────────────────────────────────────
 TIKTOK_PASS_MODE = False
@@ -254,12 +242,13 @@ USE_TORCH_CUDA = True            # PyTorch CUDA cho resize/blur/cvtColor (~15% G
 GPU_MAX_LOAD = 0.30              # Giới hạn GPU load tối đa (30% → không đơ máy)
 
 # ──────────────────────────────────────────────
-# OUTPUT PATHS (auto-generated)
+# ĐƯỜNG DẪN DỮ LIỆU
 # ──────────────────────────────────────────────
-OCR_DATA_PATH = os.path.join(_SCRIPT_DIR, "ocr_data.json")
-TRANSLATION_MAP_PATH = os.path.join(_SCRIPT_DIR, "translation_map.json")
-# Cache bản dịch giữa các lần chạy: {cleaned_zh: vi} → video mới chỉ dịch câu mới
-TRANSLATION_CACHE_PATH = os.path.join(_SCRIPT_DIR, "translation_cache.json")
+# Cache lời gọi LLM (llm.ask_json): khóa = hash prompt đầy đủ → an toàn giữa các video
+LLM_CACHE_PATH = os.path.join(_SCRIPT_DIR, "cache", "llm.sqlite")
+# Dữ liệu theo video (jobs.py): jobs/<tên-video>/…; series dùng chung hồ sơ: series/<tên-bộ>/…
+JOBS_DIR = os.path.join(_SCRIPT_DIR, "jobs")
+SERIES_DIR = os.path.join(_SCRIPT_DIR, "series")
 
 # ──────────────────────────────────────────────
 # OVERRIDE PER-VIDEO (tùy chọn)
