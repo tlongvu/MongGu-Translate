@@ -53,12 +53,14 @@ Luồng: `wm_track.json` + video → (1) chọn cặp (k, j) chỉ từ vị tr�
 
 ### 4.2 Thu cặp nền thật
 
-- Ứng viên k: frame có bằng chứng (`evidence = 1`), rải đều theo thời gian, tối đa `MAX_PAIRS·3` ứng viên.
-- Với mỗi k, thử j = k ± {75, 125, 200, 300} frame (3–12 s ở 25 fps), lần lượt; nhận j đầu tiên thỏa:
+- Ứng viên k: frame có bằng chứng (`evidence = 1`), rải đều theo thời gian, tối đa `MAX_CAND = 600` ứng viên.
+- Với mỗi k, xét j = k + {75, −75, 125, −125, 200, −200, 300, −300} frame (3–12 s ở 25 fps) theo thứ tự đó, giữ tối đa
+  `TRIES = 2` frame j mà watermark đã rời chỗ (đọc 1 lượt phải giữ sẵn các ô cần trong RAM: 600 × (1 + 2) ô ≈ 100 MB;
+  thử hết 8 j cho 1200 ứng viên thì ≈ 570 MB). Nhận j đầu tiên thỏa:
   - **watermark đã rời chỗ:** |x_j − x_k| ≥ rộng mask hoặc |y_j − y_k| ≥ cao mask (biết trước từ track, không cần đọc video);
   - **cảnh đứng yên:** sai khác trung bình |ô_k − ô_j| trên `ring` (điểm hợp lệ) < `STATIC_DIFF = 3.0` mức xám.
 - Đọc video 1 lượt: lập trước danh sách (frame → các ô cần cắt), đọc tuần tự, chỉ giữ các ô (uint8).
-- Dừng khi đủ `MAX_PAIRS = 400` cặp. Dưới `MIN_PAIRS = 60` cặp → `method = "inpaint"`, lý do "thiếu cảnh tĩnh".
+- Giữ tối đa `MAX_PAIRS = 400` cặp (rải đều theo thời gian). Dưới `MIN_PAIRS = 60` cặp → `method = "inpaint"`, lý do "thiếu cảnh tĩnh".
 
 ### 4.3 Ước lượng lớp watermark
 
@@ -96,6 +98,8 @@ Mô hình pha trộn: `ảnh = (1 − α)·nền + α·màu` cho từng điểm,
 
 - Mọi lỗi trong tách lớp (đọc video, thiếu cặp, số học) → bắt lại, ghi `method = "inpaint"` + lý do, bước 2/4 vẫn thành công.
 - `--only wm` dò lại → tách lớp lại (file cũ bị ghi đè).
+- Không thấy watermark / `WM_TRACK = False` → vẫn ghi `wm_matte.npz` với `method = "inpaint"` + lý do, để `--skip-existing`
+  biết bước 2/4 đã xong và không chạy lại.
 - Tách lớp không đổi vị trí watermark, không ảnh hưởng bộ lọc dòng OCR của bước dịch.
 
 ## 7. Kiểm thử (offline, không gọi API)
