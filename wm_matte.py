@@ -272,7 +272,8 @@ def apply(frame, center, matte, mask_shape):
         x0, y0 = corner(c, mask_shape)
         o = np.array([x0 - R, y0 - R], np.float32)
         big, _ = cut(frame, x0 - R, y0 - R, ph + 2 * R, pw + 2 * R)
-        q, sc = _local_match(cv2.cvtColor(big, cv2.COLOR_BGR2GRAY), c - o, matte["tpl"], R)
+        c0 = np.array([R + PAD + mw / 2, R + PAD + mh / 2], np.float32)   # y hệt collect: cửa sổ ±R đối xứng
+        q, sc = _local_match(cv2.cvtColor(big, cv2.COLOR_BGR2GRAY), c0, matte["tpl"], R)
         if sc >= MIN_SCORE:
             c = q + o
     x0, y0 = corner(c, mask_shape)

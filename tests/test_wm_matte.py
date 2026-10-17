@@ -271,12 +271,14 @@ def test_apply_inverts_inside_frame_and_leaves_rest_untouched():
 
 def test_remove_wm_uses_matte_when_given():
     import script as s
-    mask, matte, _, frame, _, _ = _matte_and_frame((40, 30))
+    mask, matte, bg, frame, _, ins = _matte_and_frame((40, 30))
     a = s.remove_wm(frame.copy(), (40, 30), mask, matte=matte)
     b = wm_matte.apply(frame.copy(), (40, 30), matte, mask.shape)
     assert (a == b).all()
     c = s.remove_wm(frame.copy(), (40, 30), mask)
     assert not (c == a).all(), "không có lớp → inpaint như cũ"
+    err = lambda x: np.abs(x.astype(np.float32) - bg)[ins].mean()
+    assert err(a) < err(c), "có lớp → gần nền thật hơn inpaint"
 
 
 def test_job_has_wm_matte_path():
@@ -293,3 +295,37 @@ def test_job_has_wm_matte_path():
     finally:
         jobs.JOBS_DIR = orig
         shutil.rmtree(d, ignore_errors=True)
+
+
+def test_apply_realigns_template_within_refine_radius_on_odd_mask():
+    """Mask cỡ LẺ + mẫu: lệch track ±REFINE_R theo cả x và y đều phải căn lại đúng ô (cửa sổ khớp đối xứng như collect)."""
+    alpha, color = _glyph()
+    h, w = (n - (n % 2 == 0) for n in alpha.shape)                    # cắt về cỡ lẻ
+    alpha, color = alpha[:h, :w], color[:h, :w]
+    mask = cv2.dilate((alpha > 0).astype(np.uint8) * 255, np.ones((7, 7), np.uint8))
+    assert mask.shape[0] % 2 == 1 and mask.shape[1] % 2 == 1
+    inside, _ = wm_matte.geometry(mask)
+    P, ph, pw = wm_matte.PAD, *inside.shape
+    a_t = cv2.copyMakeBorder(alpha, P, P, P, P, cv2.BORDER_CONSTANT, value=0)
+    aW = a_t[..., None] * cv2.copyMakeBorder(color, P, P, P, P, cv2.BORDER_CONSTANT, value=0)
+    tpl = wm_track._grad(cv2.cvtColor(np.round(alpha[..., None] * color).astype(np.uint8), cv2.COLOR_BGR2GRAY))
+    matte = {"alpha": a_t, "aW": aW, "edge": np.zeros(inside.shape, bool), "tpl": tpl, "inside": inside}
+
+    rng = np.random.default_rng(7)
+    bg = cv2.normalize(cv2.GaussianBlur(rng.integers(0, 256, (120, 200, 3)).astype(np.float32), (0, 0), 8),
+                       None, 50, 200, cv2.NORM_MINMAX)
+    true_c = (100, 60)
+    x0, y0 = wm_matte.corner(true_c, mask.shape)
+    frame = bg.copy()
+    frame[y0:y0 + ph, x0:x0 + pw] = (1 - a_t[..., None]) * bg[y0:y0 + ph, x0:x0 + pw] + aW
+    frame = np.clip(np.round(frame), 0, 255).astype(np.uint8)
+
+    ref = wm_matte.apply(frame.copy(), true_c, matte, mask.shape)
+    area = (slice(y0, y0 + ph), slice(x0, x0 + pw))
+    assert np.abs(ref[area].astype(np.float32) - bg[area]).max() <= 2.0, "đúng tâm → khôi phục nền"
+    R = wm_matte.REFINE_R
+    for dy in (-R, 0, R):
+        for dx in (-R, 0, R):
+            out = wm_matte.apply(frame.copy(), (true_c[0] + dx, true_c[1] + dy), matte, mask.shape)
+            d = np.abs(out[area].astype(np.float32) - ref[area]).max()
+            assert d <= 2.0, f"track lệch ({dx:+d}, {dy:+d}) px không căn lại đúng ô: sai {d}"
