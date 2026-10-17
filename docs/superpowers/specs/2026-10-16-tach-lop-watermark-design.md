@@ -119,6 +119,14 @@ Mô hình pha trộn: `ảnh = (1 − α)·nền + α·màu` cho từng điểm,
 - Bước tách lớp ≤ 1/4 thời lượng video; render không chậm hơn quá 10%.
 - Ghi số đo thật vào mục 9 của spec này.
 
-## 9. Kết quả kiểm thật
+## 9. Kết quả kiểm thật (2026-10-17, video Douyin 36 phút, watermark 粥咪咪)
 
-(Điền khi làm xong.)
+Video gốc không còn trên máy → chạy `wm_matte.build` trực tiếp trên bản 25 fps của job (không render cả video).
+
+- **Số đo:** 163 cặp nền thật (600 ứng viên × 2 lần thử); PSNR phần giữ riêng: đảo pha trộn **32,6 dB**, inpaint **25,8 dB** (+6,8 dB) → `method = "invert"`. Tách lớp **37 s** cho 36,4 phút (0,02× thời lượng). Xóa / frame: **2,8 ms** (inpaint 7,1 ms).
+- **Ảnh trước / sau ở 8 thời điểm (đều là frame có bằng chứng, mẫu khớp đúng chỗ, lệch 0 px kể cả khi dò ±12 px):**
+  - nền có chi tiết (mép ghế, lan can, nền tối): tốt hơn inpaint rõ — giữ nét nền thay vì mảng nhòe;
+  - còn **bóng ma thấy được** ở 3/8 (nền tím, nền kem phẳng có viền chữ nổi, nền cam);
+  - **hỏng** ở 1/8: frame 31 (giây 1,2) watermark đang mờ dần vào, độ đậm thật ~0,47 lần mức ước lượng → trừ quá tay, còn chữ tối, tệ hơn inpaint.
+- **Thử nhanh (nháp):** ước lượng độ đậm riêng từng frame (hệ số k = 0,47–1,26, bình phương tối thiểu so với nền inpaint) chưa đáng tin — có frame tệ đi (k = 1,26); chốt an toàn từng frame theo chỉ số bóng ma không thấy việc inpaint phá nét nền nên nghiêng về inpaint, và chỉ số có dấu còn chọn nhầm ở nền phẳng.
+- **Kết luận:** tiêu chí "không còn mảng nhòe hay bóng ma rõ" **chưa đạt**. Chấm PSNR trên cặp cảnh tĩnh không bắt được: (1) độ đậm watermark thay đổi theo thời gian (mờ dần vào / ra, mỗi đoạn hơi khác), (2) bóng ma ở mép nét chữ trên nền phẳng.
