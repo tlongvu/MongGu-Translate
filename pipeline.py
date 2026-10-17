@@ -92,6 +92,7 @@ def main():
         sys.exit(1)
     print(f"  Job     : {job.dir}" + (f"  (series: {job.series})" if job.series else ""))
 
+    wm_extra = []
     if args.skip_existing:
         if run_ocr and os.path.exists(job.ocr_data):
             try:
@@ -104,8 +105,12 @@ def main():
                 print("  [SKIP] OCR đã xong cho video này → bỏ qua OCR")
                 run_ocr = False
         if run_wm and not run_ocr and os.path.exists(job.wm_track):   # OCR vừa chạy lại → phải dò lại
-            print("  [SKIP] Đã dò watermark chạy cho video này → bỏ qua")
-            run_wm = False
+            if os.path.exists(job.wm_matte):
+                print("  [SKIP] Đã dò watermark chạy + tách lớp watermark cho video này → bỏ qua")
+                run_wm = False
+            else:
+                print("  [SKIP] Đã dò watermark chạy → chỉ tách lớp watermark")
+                wm_extra = ["--matte-only"]
         if run_tr and not run_ocr and os.path.exists(job.lines):  # OCR vừa chạy lại → bản dịch cũ không còn khớp
             print("  [SKIP] Đã có bản dịch cho video này → bỏ qua dịch")
             run_tr = False
@@ -122,7 +127,8 @@ def main():
 
     if run_wm:
         # chạy riêng (--only wm) mà lỗi thì phải báo lỗi thật; trong cả pipeline thì chỉ cảnh báo
-        run_step("Bước 2/4 — Dò watermark chạy", "wm_track.py", ["--input", args.input], required=(args.only == "wm"))
+        run_step("Bước 2/4 — Dò watermark chạy", "wm_track.py", ["--input", args.input] + wm_extra,
+                 required=(args.only == "wm"))
 
     if run_tr:
         run_step("Bước 3/4 — Dịch", "translate_pass.py", ["--input", args.input])

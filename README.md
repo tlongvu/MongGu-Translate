@@ -71,6 +71,7 @@ Watermark chạy là chữ ID nhỏ, mờ, trôi khắp khung hình (vd "原创@
 2. dựng mẫu nét chữ từ những lần OCR đọc đủ;
 3. dò mẫu trên mọi frame, nối các lần dò chắc chắn thành quỹ đạo, lấp đoạn mờ bằng nội suy;
 4. render xóa theo **hình nét chữ** ở mọi frame.
+5. **tách lớp watermark** (độ đậm + màu) từ những đoạn cảnh đứng yên, chấm điểm so với nền thật: thắng inpaint ≥ 1 dB thì render khôi phục nền bằng **đảo pha trộn** (giữ chi tiết, không nhòe), không thì giữ inpaint. Log: `[WM] Lớp watermark: … → xóa bằng đảo pha trộn | giữ inpaint`; kết quả ở `jobs/<tên>/wm_matte.npz`.
 
 - **Kiểm:** log `[WM] Thấy watermark chạy '…' — bám N frame (…% có bằng chứng)`, và ảnh `jobs/<tên>/wm_preview.png` (khung xanh = dò thấy, vàng = nội suy) phải nằm đúng lên chữ.
 - **Chạy lại riêng bước này:** `--only wm`, rồi `--only render`.

@@ -30,7 +30,7 @@ import numpy as np
 
 from config import SUPPRESS_TEXTS, VIDEO_PATH, WM_TRACK
 from jobs import JobError, open_job, working_video
-from utils import imwrite_any, write_json_atomic
+from utils import imread_gray, imwrite_any, write_json_atomic
 
 # ── Tự nhận watermark chạy (số liệu chốt ngưỡng: spec 2026-09-27 mục 4.1) ──
 MIN_TEXT_LEN = 3          # chữ watermark ≥ 3 ký tự (kênh "粥咪咪"); ngắn hơn dễ trùng nhãn tên nhân vật
@@ -505,6 +505,49 @@ def write_preview(video_path, result, out_path, n=6):
     return True
 
 
+def _build_matte(job, video, ocr_data, track, mask):
+    """Tách lớp watermark (wm_matte.py) → job.wm_matte. Bước phụ: lỗi gì cũng chỉ làm render quay về inpaint."""
+    import wm_matte                       # import muộn: wm_matte dùng _local_match của module này
+    try:
+        built = build_template(video, find_moving_wm(ocr_data))
+        rec = wm_matte.build(video, track, mask, built[0] if built else None)
+    except Exception as e:                # ponytail: bắt rộng vì là bước phụ; lý do vẫn in ra log để sửa
+        rec = {"method": "inpaint", "reason": f"lỗi tách lớp: {e!r}", "pairs": 0}
+    wm_matte.save(job.wm_matte, rec)
+    print(f"  [WM] Lớp watermark: {rec['reason']} → "
+          f"{'xóa bằng đảo pha trộn' if rec['method'] == 'invert' else 'giữ inpaint'}")
+    return rec
+
+
+def _no_matte(job, reason):
+    """Ghi wm_matte.npz method inpaint (để --skip-existing biết bước 2/4 đã xong)."""
+    import wm_matte
+    wm_matte.save(job.wm_matte, {"method": "inpaint", "reason": reason, "pairs": 0})
+
+
+def run_matte_only(video_path: str) -> int:
+    """Đã dò watermark (wm_track.json) mà chưa tách lớp → chỉ tách lớp (pipeline --skip-existing).
+    Mã 0 khi xong; 1 khi thiếu job / track / OCR / mask."""
+    try:
+        job = open_job(video_path)
+        with open(job.wm_track, encoding="utf-8") as f:
+            track = json.load(f)
+        with open(job.ocr_data, encoding="utf-8") as f:
+            ocr_data = json.load(f)
+    except (JobError, OSError, ValueError) as e:
+        print(f"  [WM][ERROR] {e}")
+        return 1
+    if not track.get("found"):
+        _no_matte(job, "không có watermark chạy")
+        return 0
+    mask = imread_gray(job.wm_mask)
+    if mask is None:
+        print(f"  [WM][ERROR] Thiếu {job.wm_mask} — chạy lại: python pipeline.py --input <video> --only wm")
+        return 1
+    _build_matte(job, working_video(job, ocr_data, video_path), ocr_data, track, mask)
+    return 0
+
+
 def run(video_path: str) -> int:
     """Dò watermark chạy cho video → jobs/<tên>/wm_track.json (+ wm_mask.png, wm_preview.png).
     Mã 0 cả khi không thấy / bỏ qua (ghi found: false + lý do); 1 khi thiếu job/OCR hoặc không mở được video."""
@@ -518,6 +561,7 @@ def run(video_path: str) -> int:
         return 1
     if not WM_TRACK:
         write_json_atomic(job.wm_track, {"found": False, "reason": "tắt trong config (WM_TRACK = False)"})
+        _no_matte(job, "tắt trong config (WM_TRACK = False)")
         print("  [WM] Tắt trong config (WM_TRACK = False) → không xóa watermark chạy.")
         return 0
     with open(job.ocr_data, encoding="utf-8") as f:
@@ -541,13 +585,19 @@ def run(video_path: str) -> int:
     else:
         print(f"  [WM] Không xóa watermark chạy: {result['reason']}")
     write_json_atomic(job.wm_track, result)
+    if result["found"]:
+        _build_matte(job, video, ocr_data, result, mask)
+    else:
+        _no_matte(job, result["reason"])
     return 0
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Dò watermark chạy → jobs/<tên>/wm_track.json (render dùng để xóa)")
+    ap = argparse.ArgumentParser(description="Dò watermark chạy → jobs/<tên>/wm_track.json + wm_matte.npz (render dùng để xóa)")
     ap.add_argument("--input", "-i", type=str, default=VIDEO_PATH, help="Đường dẫn video gốc")
-    sys.exit(run(ap.parse_args().input))
+    ap.add_argument("--matte-only", action="store_true", help="Chỉ tách lớp watermark (đã có wm_track.json)")
+    a = ap.parse_args()
+    sys.exit(run_matte_only(a.input) if a.matte_only else run(a.input))
 
 
 if __name__ == "__main__":

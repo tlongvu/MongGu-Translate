@@ -321,6 +321,11 @@ def test_fill_gaps_redetects_and_follows_turn_between_distant_anchors():
         shutil.rmtree(d, ignore_errors=True)
 
 
+def _matte_meta(path):
+    with np.load(path, allow_pickle=False) as z:
+        return json.loads(str(z["meta"]))
+
+
 def test_run_writes_track_mask_preview_and_can_be_disabled():
     d = tempfile.mkdtemp(prefix="wm 修仙 ")
     orig = (jobs.JOBS_DIR, wm_track.WM_TRACK)
@@ -335,9 +340,14 @@ def test_run_writes_track_mask_preview_and_can_be_disabled():
         assert t["found"] and t["total_frames"] == wm_synth.N and len(t["xy"]) == len(t["evidence"])
         assert utils.imread_gray(job.wm_mask) is not None, "mask phải ghi được (đường dẫn Unicode)"
         assert utils.imread_gray(job.wm_preview) is not None
+        meta = _matte_meta(job.wm_matte)                  # nền video tổng hợp trôi 1 px/frame → thiếu cảnh tĩnh
+        assert meta["method"] == "inpaint" and "cảnh tĩnh" in meta["reason"], meta
+        os.remove(job.wm_matte)
+        assert wm_track.run_matte_only(video) == 0 and os.path.exists(job.wm_matte), "chỉ tách lớp từ track có sẵn"
         wm_track.WM_TRACK = False
         assert wm_track.run(video) == 0
         assert json.load(open(job.wm_track, encoding="utf-8"))["found"] is False
+        assert _matte_meta(job.wm_matte)["method"] == "inpaint", "tắt WM_TRACK vẫn ghi wm_matte.npz (để bỏ qua lần sau)"
         os.remove(job.ocr_data)
         assert wm_track.run(video) == 1, "chưa có OCR → mã 1"
     finally:
@@ -448,6 +458,32 @@ def test_optional_step_failure_does_not_stop_pipeline():
         except SystemExit as e:
             assert e.code == 3
     finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_pipeline_skip_existing_builds_only_missing_matte():
+    import pipeline
+    d = tempfile.mkdtemp(prefix="pipe 修仙 ")
+    orig = (jobs.JOBS_DIR, pipeline.run_step, sys.argv)
+    calls = []
+    try:
+        jobs.JOBS_DIR = os.path.join(d, "jobs")
+        video = os.path.join(d, "v.mp4")
+        with open(video, "wb") as f:
+            f.write(os.urandom(64))
+        job = jobs.open_job(video, create=True)
+        utils.write_json_atomic(job.ocr_data, {"complete": True})
+        utils.write_json_atomic(job.wm_track, {"found": False})
+        pipeline.run_step = lambda title, script, extra, required=True: calls.append(extra) or 0.0
+        sys.argv = ["pipeline.py", "--input", video, "--only", "wm", "--skip-existing"]
+        pipeline.main()
+        assert calls == [["--input", video, "--matte-only"]], calls
+        open(job.wm_matte, "wb").close()
+        calls.clear()
+        pipeline.main()
+        assert calls == [], "đã có cả wm_track.json lẫn wm_matte.npz → bỏ qua bước 2"
+    finally:
+        jobs.JOBS_DIR, pipeline.run_step, sys.argv = orig
         shutil.rmtree(d, ignore_errors=True)
 
 
