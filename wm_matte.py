@@ -108,3 +108,156 @@ def psnr(x, ref, m):
 def choose(p_invert, p_inpaint):
     """Chỉ dùng đảo pha trộn khi hơn inpaint ≥ MIN_GAIN_DB."""
     return "invert" if p_invert >= p_inpaint + MIN_GAIN_DB else "inpaint"
+
+
+def plan(track, mask_shape):
+    """Chọn trước các cặp chỉ từ vị trí đã bám (không đọc video): k = frame có bằng chứng, rải đều ≤ MAX_CAND;
+    mỗi k giữ ≤ TRIES frame j = k + GAPS (theo thứ tự) mà watermark đã rời chỗ. → [(k, [j, …])]."""
+    s0, xy, ev = int(track["start"]), track["xy"], track["evidence"]
+    mh, mw = mask_shape
+    ks = [s0 + i for i, c in enumerate(ev) if c == "1"]
+    if len(ks) > MAX_CAND:
+        ks = [ks[i] for i in np.linspace(0, len(ks) - 1, MAX_CAND).astype(int)]
+    out = []
+    for k in ks:
+        xk, yk = xy[k - s0]
+        js = []
+        for g in GAPS:
+            j = k + g
+            if 0 <= j - s0 < len(xy):
+                xj, yj = xy[j - s0]
+                if abs(xj - xk) >= mw or abs(yj - yk) >= mh:
+                    js.append(j)
+                    if len(js) == TRIES:
+                        break
+        if js:
+            out.append((k, js))
+    return out
+
+
+def collect(video_path, track, mask, tpl=None):
+    """Đọc video MỘT lượt tuần tự, cắt ô ở các frame k (căn lại ±REFINE_R bằng tpl nếu có) và j (đúng chỗ đó),
+    giữ cặp có cảnh đứng yên trên vành. → (I, B, V) uint8: (n, ph, pw, 3) ×2 và (n, ph, pw)."""
+    s0, xy = int(track["start"]), track["xy"]
+    mh, mw = mask.shape
+    ph, pw, R = mh + 2 * PAD, mw + 2 * PAD, REFINE_R
+    _, ring = geometry(mask)
+    pairs = plan(track, mask.shape)
+    need = {}                                       # frame → [(vai trò, chỉ số cặp)]
+    for i, (k, js) in enumerate(pairs):
+        need.setdefault(k, []).append(("k", i))
+        for j in js:
+            need.setdefault(j, []).append(("j", i))
+    big_k, off, big_j = {}, {}, {}
+    cap = cv2.VideoCapture(video_path)
+    last = max(need) if need else -1
+    f = 0
+    while f <= last:
+        if f in need:
+            ok, frame = cap.read()
+        else:
+            ok, frame = cap.grab(), None
+        if not ok:
+            break
+        for role, i in need.get(f, ()):
+            k = pairs[i][0]
+            x0, y0 = corner(xy[k - s0], mask.shape)
+            crop = cut(frame, x0 - R, y0 - R, ph + 2 * R, pw + 2 * R)   # nới R để còn căn lại
+            if role == "j":
+                big_j.setdefault(i, {})[f] = crop
+                continue
+            dx = dy = 0
+            if tpl is not None:
+                c = np.array([R + PAD + mw / 2, R + PAD + mh / 2], np.float32)
+                q, sc = _local_match(cv2.cvtColor(crop[0], cv2.COLOR_BGR2GRAY), c, tpl, R)
+                if sc < MIN_SCORE:
+                    continue
+                dx, dy = int(np.clip(round(q[0] - c[0]), -R, R)), int(np.clip(round(q[1] - c[1]), -R, R))
+            big_k[i], off[i] = crop, (dx, dy)
+        f += 1
+    cap.release()
+    I, B, V = [], [], []
+    for i, (kp, kv) in big_k.items():
+        dx, dy = off[i]
+        sl = (slice(R + dy, R + dy + ph), slice(R + dx, R + dx + pw))
+        a, va = kp[sl], kv[sl]
+        for j in pairs[i][1]:                       # thử theo thứ tự GAPS
+            if j not in big_j.get(i, {}):
+                continue
+            jp, jv = big_j[i][j]
+            b, vb = jp[sl], jv[sl]
+            m = (ring > 0) & (va > 0) & (vb > 0)
+            if m.any() and np.abs(a.astype(np.int16) - b.astype(np.int16))[m].mean() < STATIC_DIFF:
+                I.append(a); B.append(b); V.append(va & vb)
+                break
+    if len(I) > MAX_PAIRS:
+        keep = np.linspace(0, len(I) - 1, MAX_PAIRS).astype(int)
+        I, B, V = [I[t] for t in keep], [B[t] for t in keep], [V[t] for t in keep]
+    if not I:
+        return (np.zeros((0, ph, pw, 3), np.uint8), np.zeros((0, ph, pw, 3), np.uint8),
+                np.zeros((0, ph, pw), np.uint8))
+    return np.stack(I), np.stack(B), np.stack(V)
+
+
+def build(video_path, track, mask, tpl=None):
+    """Cả bước tách lớp cho 1 video → bản ghi cho wm_matte.npz (method "invert" | "inpaint" + lý do)."""
+    inside, _ = geometry(mask)
+    rec = {"method": "inpaint", "pairs": 0, "psnr_invert": None, "psnr_inpaint": None, "pad": PAD,
+           "track_start": int(track["start"]), "track_len": len(track["xy"]), "mask_shape": list(mask.shape)}
+    I, B, V = collect(video_path, track, mask, tpl)
+    n = rec["pairs"] = len(I)
+    if n < MIN_PAIRS:
+        rec["reason"] = f"thiếu cảnh tĩnh: {n} cặp nền thật (cần ≥ {MIN_PAIRS})"
+        return rec
+    order = np.random.default_rng(0).permutation(n)
+    nt = max(int(round(n * HOLDOUT)), 12)
+    te, tr = order[:nt], order[nt:]
+    alpha, aW = fit(I[tr], B[tr], V[tr], inside)
+    edge = edge_band(alpha, aW, inside)
+    p_inv = float(np.mean([psnr(invert(I[t], alpha, aW, edge, inside), B[t], inside * V[t]) for t in te]))
+    p_inp = float(np.mean([psnr(inpaint_roi(I[t], inside * 255), B[t], inside * V[t]) for t in te]))
+    rec.update(psnr_invert=round(p_inv, 2), psnr_inpaint=round(p_inp, 2), method=choose(p_inv, p_inp),
+               reason=f"{n} cặp nền thật; đảo pha trộn {p_inv:.1f} dB, inpaint {p_inp:.1f} dB",
+               alpha=alpha, aW=aW, edge=edge, tpl=tpl)
+    return rec
+
+
+_ARRAYS = ("alpha", "aW", "edge", "tpl")
+
+
+def save(path, rec):
+    """Ghi wm_matte.npz: các mảng (α, α·màu dạng float16) + meta JSON. Qua file tạm + os.replace."""
+    meta = {k: v for k, v in rec.items() if k not in _ARRAYS}
+    arrays = {k: rec[k] for k in _ARRAYS if rec.get(k) is not None}
+    for k in ("alpha", "aW"):
+        if k in arrays:
+            arrays[k] = arrays[k].astype(np.float16)
+    tmp = path + ".tmp.npz"
+    np.savez_compressed(tmp, meta=np.array(json.dumps(meta, ensure_ascii=False)), **arrays)
+    os.replace(tmp, path)
+
+
+def load(path, track_path, mask):
+    """→ lớp watermark để render dùng ({alpha, aW, edge, tpl, inside}), hoặc None khi: chưa có file,
+    method inpaint, không khớp vết bám hiện tại (dò lại sau khi tách lớp), hay file hỏng (cảnh báo, không làm sập)."""
+    if not os.path.exists(path):
+        return None
+    try:
+        with np.load(path, allow_pickle=False) as z:
+            meta = json.loads(str(z["meta"]))
+            if meta.get("method") != "invert":
+                return None
+            with open(track_path, encoding="utf-8") as f:
+                t = json.load(f)
+            if (meta["track_start"], meta["track_len"], list(meta["mask_shape"])) != \
+                    (t["start"], len(t["xy"]), list(mask.shape)):
+                print("  [WARN] wm_matte.npz không khớp vết bám hiện tại (đã dò lại?) — xóa watermark bằng inpaint. "
+                      "Chạy lại: python pipeline.py --input <video> --only wm")
+                return None
+            m = {"alpha": z["alpha"].astype(np.float32), "aW": z["aW"].astype(np.float32),
+                 "edge": z["edge"].astype(bool), "tpl": z["tpl"] if "tpl" in z.files else None}
+    except (OSError, ValueError, KeyError, TypeError, zipfile.BadZipFile) as e:
+        print(f"  [WARN] {path} hỏng ({e!r}) — xóa watermark bằng inpaint.")
+        return None
+    m["inside"] = geometry(mask)[0]
+    return m
