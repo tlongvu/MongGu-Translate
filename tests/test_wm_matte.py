@@ -237,3 +237,59 @@ def test_save_load_roundtrip_and_rejects_stale_or_broken():
         assert wm_matte.load(os.path.join(d, "khong_co.npz"), tp, mask) is None
     finally:
         shutil.rmtree(d, ignore_errors=True)
+
+
+def _matte_and_frame(center, bg_seed=1):
+    """Lớp watermark α = 0,3 (màu 230) trên mask 10×16; frame 60×80 có watermark pha trộn tại center."""
+    rng = np.random.default_rng(bg_seed)
+    mask = np.zeros((10, 16), np.uint8); mask[2:8, 3:13] = 255
+    inside, _ = wm_matte.geometry(mask)
+    ph, pw = inside.shape
+    alpha = (inside * 0.3).astype(np.float32)
+    aW = alpha[..., None] * 230.0 * np.ones(3, np.float32)
+    matte = {"alpha": alpha, "aW": aW, "edge": np.zeros(inside.shape, bool), "tpl": None, "inside": inside}
+    bg = rng.integers(0, 256, (60, 80, 3)).astype(np.float32)
+    x0, y0 = wm_matte.corner(center, mask.shape)
+    ys, xs = slice(max(0, y0), min(60, y0 + ph)), slice(max(0, x0), min(80, x0 + pw))
+    a = alpha[ys.start - y0:ys.stop - y0, xs.start - x0:xs.stop - x0][..., None]
+    frame = bg.copy()
+    frame[ys, xs] = (1 - a) * bg[ys, xs] + a * 230.0
+    region = np.zeros((60, 80), bool); region[ys, xs] = True
+    ins = np.zeros((60, 80), bool)
+    ins[ys, xs] = inside[ys.start - y0:ys.stop - y0, xs.start - x0:xs.stop - x0] > 0
+    return mask, matte, bg, np.clip(np.round(frame), 0, 255).astype(np.uint8), region, ins
+
+
+def test_apply_inverts_inside_frame_and_leaves_rest_untouched():
+    mask, matte, bg, frame, region, ins = _matte_and_frame((75, 55))     # ô lòi ra mép phải + dưới
+    before = frame.copy()
+    out = wm_matte.apply(frame, (75, 55), matte, mask.shape)
+    assert out.shape == (60, 80, 3)
+    assert (out[~region] == before[~region]).all(), "ngoài ô không đổi"
+    assert np.abs(out[ins].astype(np.float32) - bg[ins]).max() <= 2.0, "phần ô trong khung: khôi phục nền"
+
+
+def test_remove_wm_uses_matte_when_given():
+    import script as s
+    mask, matte, _, frame, _, _ = _matte_and_frame((40, 30))
+    a = s.remove_wm(frame.copy(), (40, 30), mask, matte=matte)
+    b = wm_matte.apply(frame.copy(), (40, 30), matte, mask.shape)
+    assert (a == b).all()
+    c = s.remove_wm(frame.copy(), (40, 30), mask)
+    assert not (c == a).all(), "không có lớp → inpaint như cũ"
+
+
+def test_job_has_wm_matte_path():
+    import jobs
+    d = tempfile.mkdtemp(prefix="job 修仙 ")
+    orig = jobs.JOBS_DIR
+    try:
+        jobs.JOBS_DIR = os.path.join(d, "jobs")
+        v = os.path.join(d, "v.mp4")
+        with open(v, "wb") as f:
+            f.write(os.urandom(64))
+        job = jobs.open_job(v, create=True)
+        assert job.wm_matte == os.path.join(job.dir, "wm_matte.npz")
+    finally:
+        jobs.JOBS_DIR = orig
+        shutil.rmtree(d, ignore_errors=True)

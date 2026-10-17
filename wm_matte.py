@@ -260,3 +260,26 @@ def load(path, track_path, mask):
         print(f"  [WARN] {path} hỏng ({e!r}) — xóa watermark bằng inpaint.")
         return None
     return m
+
+
+def apply(frame, center, matte, mask_shape):
+    """Xóa watermark ở frame (tâm center) bằng lớp đã tách: căn lại ±REFINE_R bằng tpl (nếu có), đảo pha trộn,
+    chỉ ghi phần ô nằm trong khung. Sửa frame tại chỗ."""
+    mh, mw = mask_shape
+    ph, pw, R = mh + 2 * PAD, mw + 2 * PAD, REFINE_R
+    c = np.asarray(center, np.float32)
+    if matte.get("tpl") is not None:
+        x0, y0 = corner(c, mask_shape)
+        o = np.array([x0 - R, y0 - R], np.float32)
+        big, _ = cut(frame, x0 - R, y0 - R, ph + 2 * R, pw + 2 * R)
+        q, sc = _local_match(cv2.cvtColor(big, cv2.COLOR_BGR2GRAY), c - o, matte["tpl"], R)
+        if sc >= MIN_SCORE:
+            c = q + o
+    x0, y0 = corner(c, mask_shape)
+    patch, _ = cut(frame, x0, y0, ph, pw)
+    out = invert(patch, matte["alpha"], matte["aW"], matte["edge"], matte["inside"])
+    fh, fw = frame.shape[:2]
+    ys0, xs0, ys1, xs1 = max(0, y0), max(0, x0), min(fh, y0 + ph), min(fw, x0 + pw)
+    if ys1 > ys0 and xs1 > xs0:
+        frame[ys0:ys1, xs0:xs1] = out[ys0 - y0:ys1 - y0, xs0 - x0:xs1 - x0]
+    return frame

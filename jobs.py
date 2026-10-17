@@ -76,6 +76,7 @@ def open_job(video_path: str, series: str = None, create: bool = False) -> Simpl
         wm_track=os.path.join(d, "wm_track.json"),
         wm_mask=os.path.join(d, "wm_mask.png"),
         wm_preview=os.path.join(d, "wm_preview.png"),
+        wm_matte=os.path.join(d, "wm_matte.npz"),
     )
 
 

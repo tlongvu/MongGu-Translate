@@ -50,6 +50,7 @@ from config import (
 from jobs import open_job, JobError, working_video
 from utils import imread_gray, inpaint_roi
 from wm_track import load_track
+import wm_matte
 
 
 # ──────────────────────────────────────────────
@@ -319,9 +320,12 @@ def _draw_subtitle_backgrounds(pil_img, jobs, font_path, line_spacing, min_size,
     return Image.alpha_composite(base, overlay).convert("RGB")
 
 
-def remove_wm(frame, center, mask, pad=10):
-    """Xóa watermark chạy: đặt mask (tâm = center) lên frame rồi inpaint theo INPAINT_METHOD.
-    ROI rộng hơn mask `pad` px để inpaint có ngữ cảnh; mask sát / lố mép khung thì xén. Sửa frame tại chỗ."""
+def remove_wm(frame, center, mask, pad=10, matte=None):
+    """Xóa watermark chạy tại center. Có lớp watermark (wm_matte.load) → đảo pha trộn (khôi phục nền thật);
+    không thì đặt mask rồi inpaint theo INPAINT_METHOD. ROI rộng hơn mask `pad` px; sát / lố mép khung thì xén.
+    Sửa frame tại chỗ."""
+    if matte is not None:
+        return wm_matte.apply(frame, center, matte, mask.shape)
     mh, mw = mask.shape
     fh, fw = frame.shape[:2]
     x0, y0 = int(round(center[0] - mw / 2)), int(round(center[1] - mh / 2))
@@ -787,7 +791,7 @@ def process_chunk(args):
      fps, width, height,
      ocr_interval_frames, translation_map,
      frame_detections_for_chunk, text_segments_for_chunk, vi_for_seg,
-     wm_pos, wm_mask) = args
+     wm_pos, wm_mask, wm_matte_rec) = args
 
     gpu_mode = USE_GPU and USE_NVENC
     print(f"  [Worker {chunk_idx}] Render {'(GPU+NVENC) ' if gpu_mode else ''}{'(Pass Mode) ' if TIKTOK_PASS_MODE else ''}frames {start_frame}-{end_frame}...")
@@ -856,7 +860,7 @@ def process_chunk(args):
         if not ret:
             break
         if wm_mask is not None and frame_num in wm_pos:     # watermark chạy (wm_track.py): xóa ở mọi frame
-            frame = remove_wm(frame, wm_pos[frame_num], wm_mask)
+            frame = remove_wm(frame, wm_pos[frame_num], wm_mask, matte=wm_matte_rec)
 
         # ── Priority 1: Actual keyframe (exact bbox, chính xác nhất) ──
         frame_str = str(frame_num)
@@ -1278,8 +1282,10 @@ if __name__ == "__main__":
 
     # Watermark chạy (wm_track.py): vị trí ở từng frame + mask nét chữ → xóa ở mọi frame
     wm_pos, wm_mask = load_wm_track(job, ocr_data["total_frames"])
+    wm_matte_rec = wm_matte.load(job.wm_matte, job.wm_track, wm_mask) if wm_mask is not None else None
     if wm_mask is not None:
-        print(f"  Watermark chạy : xóa ở {len(wm_pos)} frame")
+        how = "đảo pha trộn theo lớp watermark" if wm_matte_rec is not None else "inpaint"
+        print(f"  Watermark chạy : xóa ở {len(wm_pos)} frame ({how})")
 
     output_video = job.output
     num_workers = args.workers
@@ -1332,7 +1338,7 @@ if __name__ == "__main__":
          FONT_PATH, fps, width, height,
          ocr_interval_frames, translation_map,
          chunk_detections[i], chunk_segments[i], vi_for_seg,
-         chunk_wm[i], wm_mask)
+         chunk_wm[i], wm_mask, wm_matte_rec)
         for i in range(num_workers)
     ]
 
