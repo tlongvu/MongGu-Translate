@@ -11,11 +11,13 @@ import tempfile
 
 import cv2
 import numpy as np
+import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import utils  # noqa: E402
 import wm_matte  # noqa: E402
+import wm_track  # noqa: E402
 
 
 def test_invert_recovers_background_when_alpha_and_color_known():
@@ -120,26 +122,51 @@ def _make_video(path, static=True):
     return track, mask, alpha
 
 
-def test_build_on_static_scenes_recovers_alpha_and_chooses_invert():
+@pytest.fixture(scope="module")
+def static_video():
+    """Chuỗi PNG nền tĩnh ghi 1 lần cho các test dùng chung (chỉ đọc). → (mẫu tên file, track, mask, α thật)."""
     d = tempfile.mkdtemp(prefix="matte ")      # ASCII: VideoCapture không mở được chuỗi ảnh trong thư mục Unicode
     try:
         path = os.path.join(d, "f_%04d.png")
-        track, mask, a_true = _make_video(path, static=True)
-        rec = wm_matte.build(path, track, mask)
-        assert rec["pairs"] >= wm_matte.MIN_PAIRS, rec["reason"]
-        assert rec["method"] == "invert", rec["reason"]
-        assert rec["psnr_invert"] > rec["psnr_inpaint"]
-        inside, _ = wm_matte.geometry(mask)
-        gh, gw = a_true.shape
-        X0, Y0 = wm_matte.corner(track["xy"][0], mask.shape)          # chỗ α thật nằm trong ô (từ frame 0)
-        g = _truth(0)
-        ox, oy = int(round(g[0] - gw / 2)) - X0, int(round(g[1] - gh / 2)) - Y0
-        truth = np.zeros(inside.shape, np.float32)
-        truth[oy:oy + gh, ox:ox + gw] = a_true
-        err = np.abs(rec["alpha"] - truth)[inside > 0].mean()
-        assert err < 0.03, f"α ước lượng lệch TB {err:.3f}"
+        yield (path, *_make_video(path, static=True))
     finally:
         shutil.rmtree(d, ignore_errors=True)
+
+
+def _alpha_error(rec, track, mask, a_true):
+    """Sai lệch TB của α ước lượng so với α thật, đặt vào ô như lúc frame 0 của track CHƯA nhiễu (chỉ trong inside)."""
+    inside, _ = wm_matte.geometry(mask)
+    gh, gw = a_true.shape
+    X0, Y0 = wm_matte.corner(track["xy"][0], mask.shape)
+    g = _truth(0)
+    ox, oy = int(round(g[0] - gw / 2)) - X0, int(round(g[1] - gh / 2)) - Y0
+    truth = np.zeros(inside.shape, np.float32)
+    truth[oy:oy + gh, ox:ox + gw] = a_true
+    return float(np.abs(rec["alpha"] - truth)[inside > 0].mean())
+
+
+def test_build_on_static_scenes_recovers_alpha_and_chooses_invert(static_video):
+    path, track, mask, a_true = static_video
+    rec = wm_matte.build(path, track, mask)
+    assert rec["pairs"] >= wm_matte.MIN_PAIRS, rec["reason"]
+    assert rec["method"] == "invert", rec["reason"]
+    assert rec["psnr_invert"] > rec["psnr_inpaint"]
+    err = _alpha_error(rec, track, mask, a_true)
+    assert err < 0.03, f"α ước lượng lệch TB {err:.3f}"
+
+
+def test_build_with_template_realigns_jittered_track(static_video):
+    """Đường production: track lệch ±2 px từng frame, mẫu gradient căn lại ±REFINE_R → vẫn ra đúng α."""
+    path, track, mask, a_true = static_video
+    alpha, color = _glyph()
+    tpl = wm_track._grad(cv2.cvtColor(np.round(alpha[..., None] * color).astype(np.uint8), cv2.COLOR_BGR2GRAY))
+    jit = np.random.default_rng(5).integers(-2, 3, (len(track["xy"]), 2))
+    jittered = dict(track, xy=[[x + int(dx), y + int(dy)] for (x, y), (dx, dy) in zip(track["xy"], jit)])
+    rec = wm_matte.build(path, jittered, mask, tpl)
+    assert rec["pairs"] >= wm_matte.MIN_PAIRS, rec["reason"]
+    assert rec["method"] == "invert", rec["reason"]
+    err = _alpha_error(rec, track, mask, a_true)
+    assert err < 0.03, f"α ước lượng lệch TB {err:.3f}"
 
 
 def test_build_without_static_scenes_falls_back_to_inpaint():
@@ -173,7 +200,7 @@ def test_save_load_roundtrip_and_rejects_stale_or_broken():
         tp = os.path.join(d, "wm_track.json")
         utils.write_json_atomic(tp, {"found": True, "start": 5, "xy": [[1, 2]] * 50})
         rec = {"method": "invert", "reason": "x", "pairs": 70, "psnr_invert": 30.0, "psnr_inpaint": 25.0,
-               "track_start": 5, "track_len": 50, "mask_shape": [10, 16],
+               "track_start": 5, "track_len": 50, "mask_shape": [10, 16], "pad": wm_matte.PAD,
                "alpha": (inside * 0.3).astype(np.float32), "aW": np.zeros(inside.shape + (3,), np.float32),
                "edge": np.zeros(inside.shape, bool), "tpl": np.ones((4, 8), np.float32)}
         p = os.path.join(d, "wm_matte.npz")
@@ -184,11 +211,29 @@ def test_save_load_roundtrip_and_rejects_stale_or_broken():
         utils.write_json_atomic(tp, {"found": True, "start": 6, "xy": [[1, 2]] * 50})
         assert wm_matte.load(p, tp, mask) is None, "dò lại (track khác) → bỏ lớp cũ"
         utils.write_json_atomic(tp, {"found": True, "start": 5, "xy": [[1, 2]] * 50})
+        wm_matte.save(p, dict(rec, alpha=np.zeros((5, 5), np.float32)))
+        assert wm_matte.load(p, tp, mask) is None, "α lệch cỡ ô hiện tại → bỏ lớp cũ"
+        wm_matte.save(p, dict(rec, pad=wm_matte.PAD + 1))
+        assert wm_matte.load(p, tp, mask) is None, "PAD khác → bỏ lớp cũ"
         wm_matte.save(p, {"method": "inpaint", "reason": "thiếu cảnh tĩnh", "pairs": 3})
         assert wm_matte.load(p, tp, mask) is None, "method inpaint → render dùng inpaint"
         with open(p, "wb") as f:
             f.write(b"PK hong")
         assert wm_matte.load(p, tp, mask) is None, "file hỏng → không làm sập render"
+        open(p, "wb").close()
+        assert wm_matte.load(p, tp, mask) is None, "file rỗng 0 byte (EOFError) → không làm sập render"
+        noisy = np.random.default_rng(0).uniform(0, 80, inside.shape + (3,)).astype(np.float32)   # để có thân nén lớn
+        wm_matte.save(p, dict(rec, aW=noisy))
+        assert wm_matte.load(p, tp, mask) is not None
+        with open(p, "rb") as f:
+            raw = f.read()
+        for off in range(len(raw) // 2 - 40, len(raw) // 2 + 40):     # lật 4 byte giữa file: hỏng thân nén (CRC / zlib)
+            bad = bytearray(raw)
+            for i in range(4):
+                bad[off + i] ^= 0xFF
+            with open(p, "wb") as f:
+                f.write(bad)
+            assert wm_matte.load(p, tp, mask) is None, f"lật byte ở {off} → không làm sập render"
         assert wm_matte.load(os.path.join(d, "khong_co.npz"), tp, mask) is None
     finally:
         shutil.rmtree(d, ignore_errors=True)

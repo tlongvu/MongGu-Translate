@@ -9,7 +9,6 @@ nét chữ. Tự chấm điểm trên cặp giữ riêng: chỉ dùng khi hơn i
 
 import json
 import os
-import zipfile
 
 import cv2
 import numpy as np
@@ -239,7 +238,7 @@ def save(path, rec):
 
 def load(path, track_path, mask):
     """→ lớp watermark để render dùng ({alpha, aW, edge, tpl, inside}), hoặc None khi: chưa có file,
-    method inpaint, không khớp vết bám hiện tại (dò lại sau khi tách lớp), hay file hỏng (cảnh báo, không làm sập)."""
+    method inpaint, không khớp vết bám / cỡ ô hiện tại (dò lại sau khi tách lớp), hay file hỏng (cảnh báo, không làm sập)."""
     if not os.path.exists(path):
         return None
     try:
@@ -249,15 +248,15 @@ def load(path, track_path, mask):
                 return None
             with open(track_path, encoding="utf-8") as f:
                 t = json.load(f)
-            if (meta["track_start"], meta["track_len"], list(meta["mask_shape"])) != \
-                    (t["start"], len(t["xy"]), list(mask.shape)):
+            m = {"alpha": z["alpha"].astype(np.float32), "aW": z["aW"].astype(np.float32),
+                 "edge": z["edge"].astype(bool), "tpl": z["tpl"] if "tpl" in z.files else None,
+                 "inside": geometry(mask)[0]}
+            if (meta["track_start"], meta["track_len"], list(meta["mask_shape"]), meta.get("pad"), m["alpha"].shape) != \
+                    (t["start"], len(t["xy"]), list(mask.shape), PAD, m["inside"].shape):
                 print("  [WARN] wm_matte.npz không khớp vết bám hiện tại (đã dò lại?) — xóa watermark bằng inpaint. "
                       "Chạy lại: python pipeline.py --input <video> --only wm")
                 return None
-            m = {"alpha": z["alpha"].astype(np.float32), "aW": z["aW"].astype(np.float32),
-                 "edge": z["edge"].astype(bool), "tpl": z["tpl"] if "tpl" in z.files else None}
-    except (OSError, ValueError, KeyError, TypeError, zipfile.BadZipFile) as e:
+    except Exception as e:  # file hỏng kiểu gì cũng không được làm sập render
         print(f"  [WARN] {path} hỏng ({e!r}) — xóa watermark bằng inpaint.")
         return None
-    m["inside"] = geometry(mask)[0]
     return m
