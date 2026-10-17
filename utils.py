@@ -52,3 +52,21 @@ def imread_gray(path: str):
     except OSError:
         return None
     return cv2.imdecode(data, cv2.IMREAD_GRAYSCALE) if data.size else None
+
+
+def inpaint_roi(roi_frame, roi_mask):
+    """Xóa chữ / watermark trong ROI theo INPAINT_METHOD (config): telea | ns | fill (blur nhanh).
+    Dùng chung cho render (script.py) và chấm điểm lớp watermark (wm_matte.py)."""
+    import cv2
+    from config import INPAINT_METHOD, INPAINT_RADIUS
+    method = INPAINT_METHOD.lower()
+    if method == "fill":
+        # Siêu nhanh: làm mờ mạnh ROI rồi chỉ dán phần mask (không tái dựng cấu trúc).
+        blurred = cv2.GaussianBlur(roi_frame, (0, 0), sigmaX=max(INPAINT_RADIUS * 2, 6))
+        out = roi_frame.copy()
+        m = roi_mask > 0
+        out[m] = blurred[m]
+        return out
+    if method == "ns":
+        return cv2.inpaint(roi_frame, roi_mask, INPAINT_RADIUS, cv2.INPAINT_NS)
+    return cv2.inpaint(roi_frame, roi_mask, INPAINT_RADIUS, cv2.INPAINT_TELEA)

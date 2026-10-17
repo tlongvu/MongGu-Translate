@@ -43,12 +43,12 @@ from config import (
     TIKTOK_PASS_MODE, PASS_ZOOM_RATIO, PASS_SHARPEN, PASS_COLOR_ADJUST,
     PASS_PORTRAIT_916, SUPPRESS_QR_CODES,
     USE_GPU, USE_NVENC, USE_NVDEC, USE_TORCH_CUDA, GPU_MAX_LOAD,
-    INPAINT_METHOD, OUTPUT_HEIGHT, OUTPUT_SHARPEN,
+    OUTPUT_HEIGHT, OUTPUT_SHARPEN,
     SUBTITLE_BG_ENABLE, SUBTITLE_BG_COLOR, SUBTITLE_BG_ALPHA,
     SUBTITLE_BG_PAD, SUBTITLE_BG_RADIUS,
 )
 from jobs import open_job, JobError, working_video
-from utils import imread_gray
+from utils import imread_gray, inpaint_roi
 from wm_track import load_track
 
 
@@ -319,21 +319,6 @@ def _draw_subtitle_backgrounds(pil_img, jobs, font_path, line_spacing, min_size,
     return Image.alpha_composite(base, overlay).convert("RGB")
 
 
-def _inpaint_roi(roi_frame, roi_mask):
-    """Xóa text gốc trong ROI theo INPAINT_METHOD: telea | ns | fill (blur nhanh)."""
-    method = INPAINT_METHOD.lower()
-    if method == "fill":
-        # Siêu nhanh: làm mờ mạnh ROI rồi chỉ dán phần mask (không tái dựng cấu trúc).
-        blurred = cv2.GaussianBlur(roi_frame, (0, 0), sigmaX=max(INPAINT_RADIUS * 2, 6))
-        out = roi_frame.copy()
-        m = roi_mask > 0
-        out[m] = blurred[m]
-        return out
-    if method == "ns":
-        return cv2.inpaint(roi_frame, roi_mask, INPAINT_RADIUS, cv2.INPAINT_NS)
-    return cv2.inpaint(roi_frame, roi_mask, INPAINT_RADIUS, cv2.INPAINT_TELEA)
-
-
 def remove_wm(frame, center, mask, pad=10):
     """Xóa watermark chạy: đặt mask (tâm = center) lên frame rồi inpaint theo INPAINT_METHOD.
     ROI rộng hơn mask `pad` px để inpaint có ngữ cảnh; mask sát / lố mép khung thì xén. Sửa frame tại chỗ."""
@@ -348,7 +333,7 @@ def remove_wm(frame, center, mask, pad=10):
         return frame
     roi_mask = np.zeros((ry1 - ry0, rx1 - rx0), np.uint8)
     roi_mask[my0 - ry0:my1 - ry0, mx0 - rx0:mx1 - rx0] = mask[my0 - y0:my1 - y0, mx0 - x0:mx1 - x0]
-    frame[ry0:ry1, rx0:rx1] = _inpaint_roi(frame[ry0:ry1, rx0:rx1], roi_mask)
+    frame[ry0:ry1, rx0:rx1] = inpaint_roi(frame[ry0:ry1, rx0:rx1], roi_mask)
     return frame
 
 
@@ -979,7 +964,7 @@ def process_chunk(args):
                 cv2.fillPoly(roi_mask, [pts_exp], 255)
                 
                 # Inpaint SIEU NHANH tren tep anh be dan de vao anh to
-                inpainted_roi = _inpaint_roi(roi_frame, roi_mask)
+                inpainted_roi = inpaint_roi(roi_frame, roi_mask)
                 frame[y1:y2, x1:x2] = inpainted_roi
 
         # ── TIKTOK PASS MODE: Transformations ──
