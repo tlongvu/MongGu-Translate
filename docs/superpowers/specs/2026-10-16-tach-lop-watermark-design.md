@@ -137,7 +137,7 @@ Video gốc không còn trên máy → chạy `wm_matte.build` trực tiếp tr�
 
 - **Phần dư sau đảo pha trộn** nằm ở kênh sáng (Y: lòng 6,1, mép 12,8 RMS; Cr/Cb ≈ 2) và **gần như ngẫu nhiên theo frame**: phần hệ thống (TB theo điểm qua các cặp) chỉ 1,3 / 8,7 RMS → nhiễu nén H.264 quanh nét chữ, không phải lớp ước lượng sai. Làm trung bình nhiều frame sẽ khử được.
 - **Trung bình theo thời gian** (frame t ± 3 đã khôi phục, cắt tại ô của t, trọng số exp(−(Δ/6)²) trên ảnh xám mờ σ 2): nền tĩnh sạch hẳn (5/7 frame mẫu), nền chuyển động (tím, cam) còn vệt nhẹ như trước.
-- **Đã thử, không dùng:** bù chuyển động nền trước khi lấy TB (tương quan pha / luồng quang học Farneback) — ảnh không khá hơn, có cảnh trọng số còn tụt; căn lớp lẻ pixel (đỉnh NCC nội suy parabol) — +0,1 dB, chỉ số bóng ma không phân biệt được; tách kênh màu (lỗi không nằm ở Cr/Cb); mô hình học sâu (ProPainter / LaMa) — máy chỉ có torch CPU + GTX 1650 4 GB, quá chậm cho 54 nghìn frame, và inpaint vẫn thua đảo pha trộn 6–8 dB ở watermark bán trong suốt.
+- **Đã thử, không dùng:** bù chuyển động nền trước khi lấy TB (tương quan pha / luồng quang học Farneback, lề 24 rồi 48 px) — nền tím đổi hình (đèn, hoạt hình) chứ không chỉ trượt, trọng số 0,46 → 0,50, ảnh không khá hơn; nhân lớp theo k ước lượng khi k ∈ [0,7; 1] (cho đoạn watermark đậm ~85% lúc mới hiện) — trên 42 cặp nền thật k ước lệch k thật 0,07 (tương quan 0,20) nên frame thường tệ đi 0,5 dB; căn lớp lẻ pixel (đỉnh NCC nội suy parabol) — +0,1 dB, chỉ số bóng ma không phân biệt được; tách kênh màu (lỗi không nằm ở Cr/Cb); mô hình học sâu (ProPainter / LaMa) — máy chỉ có torch CPU + GTX 1650 4 GB, quá chậm cho 54 nghìn frame, và inpaint vẫn thua đảo pha trộn 6–8 dB ở watermark bán trong suốt.
 - **Độ đậm k theo frame** (bình phương tối thiểu (ảnh − nền inpaint) theo α·(màu − nền inpaint)) trên 201 cửa sổ 7 frame rải khắp video: trung vị 0,99, p5 0,86, độ lệch chuẩn trong cửa sổ 0,04. Lệch > 0,3 ở 7% cửa sổ:
   - k ≈ 0–0,04: **không có watermark** (vị trí track còn giữ) → bản hiện tại trừ lớp vào nền sạch, **in ngược chữ tối** (lỗi thấy rõ);
   - k ≈ 0,4–0,7: watermark **hiện dần từng chữ** (粥 rõ, 咪咪 nhạt) → nhân hệ số k cho cả lớp không được, inpaint là an toàn;
@@ -146,11 +146,11 @@ Video gốc không còn trên máy → chạy `wm_matte.build` trực tiếp tr�
 
 ### 10.2 Thiết kế (`wm_matte.py`)
 
-- `opacity(patch, matte)` → k (nền inpaint ô thu nhỏ 2 lần, chỉ điểm α > 0,1).
+- `opacity(patch, valid, matte)` → k (nền Telea cố định trên ô thu nhỏ 2 lần — ngưỡng chấm trên Telea, không theo `INPAINT_METHOD`; chỉ điểm α > 0,1 trong khung; ô gần như ngoài khung → 1).
 - `stream(frames, pos, matte, mask_shape)`: nhận lặp (số frame, ảnh gốc) liên tiếp, trả lặp (số frame, ảnh đã xóa) cùng thứ tự, trễ `TEMPORAL_K` frame. Mỗi frame có vị trí: căn ±3 px, đảo pha trộn, đo k. Frame t ra theo trung vị k của t ± `TEMPORAL_K` (frame có vị trí):
   - k < `K_ABSENT` = 0,25 → trả ảnh gốc;
   - k < `K_FADE` = 0,7 → inpaint ô (trên ảnh gốc);
-  - còn lại → ô của t = TB có trọng số exp(−(Δ / `TEMPORAL_DIFF`)²) các frame t ± `TEMPORAL_K` đã khôi phục cắt tại ô của t (Δ: ảnh xám mờ σ 2; bỏ láng giềng có k < `K_FADE`; điểm ngoài khung trọng số 0). `TEMPORAL_K` = 3, `TEMPORAL_DIFF` = 6,0.
+  - còn lại → ô của t = TB có trọng số exp(−(Δ / `TEMPORAL_DIFF`)²) các frame t ± `TEMPORAL_K` đã khôi phục cắt tại ô của t (Δ: ảnh xám mờ σ 2; luôn gồm chính t; bỏ láng giềng ngoài track — có thể còn watermark, và là frame người nhận sửa tại chỗ — hoặc có k < `K_FADE`; điểm ngoài khung trọng số 0). `TEMPORAL_K` = 3, `TEMPORAL_DIFF` = 6,0.
 - `apply` giữ nguyên (xóa 1 frame, không TB) — dùng chung hàm căn ô với `stream`.
 
 ### 10.3 Render (`script.py`)
@@ -161,5 +161,6 @@ Video gốc không còn trên máy → chạy `wm_matte.build` trực tiếp tr�
 ### 10.4 Xong khi
 
 - Toàn bộ test qua; test mới trên video giả không nén: TB theo thời gian giảm sai số so với nền thật khi có nhiễu theo frame; đoạn không có watermark giữ nguyên ảnh; đoạn watermark nhạt (k ≈ 0,5) → inpaint; số frame ra đúng thứ tự, đủ, kể cả chunk sát đầu / cuối video.
+- **Kết quả (2026-10-24):** đạt cả 3 ý dưới. Nhấp nháy trong ô (frame liền nhau, cùng ô) cũ → mới: nền kem 5,8 → 2,5; nền cam 4,4 → 0,9; nền tím 13,9 → 11,2; đoạn vắng watermark 1,8 → 1,5; mở đầu hiện dần 8,2 → 7,2. Xóa 9,1 ms / frame. Còn lại: ~0,5 s lúc watermark mới hiện (đậm ~85%) còn bóng nhẹ trên nền phẳng; nền chuyển động mạnh còn vệt nhẹ.
 - Video 36 phút: ảnh trước / sau ở 11 frame (8 frame mục 9 + 2 frame không có watermark + 1 frame hiện dần) không còn chữ in ngược, nền tĩnh không còn bóng ma rõ.
 - Xóa watermark ≤ 10 ms / frame (cũ 2,2 ms; render cả frame vài chục ms).

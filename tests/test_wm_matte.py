@@ -287,7 +287,7 @@ class _Cap:
 
 def test_wm_frames_reads_margin_and_matches_stream():
     import script as s
-    mask, matte, _, frames, pos = _stream_case([1.0] * 9, noise=6.0)
+    mask, matte, _, frames, pos = _stream_case([1.0] * 5 + [0.0] * 4, noise=6.0)     # đổi độ đậm ngay lề chunk
     full = dict(wm_matte.stream(iter(enumerate(frames)), pos, matte, mask.shape))
     for start, end in [(2, 5), (0, 3), (6, 9)]:                          # giữa, sát đầu, sát cuối video
         got = list(s.wm_frames(_Cap(frames), start, end, pos, mask, matte))
@@ -354,26 +354,31 @@ def test_apply_realigns_template_within_refine_radius_on_odd_mask():
 _C = (80, 50)
 
 
-def _stream_case(strengths, noise=0.0, seed=0):
+def _stream_case(strengths, noise=0.0, seed=0, center=_C, stripes=False):
     """Nền tĩnh 100×160; watermark α = 0,3 (màu 230) trên mask 30×60 (cỡ gần thật) đứng yên tâm (80, 50), độ đậm frame i = strengths[i];
-    noise: nhiễu Gauss σ thêm riêng từng frame trên các hàng chứa ô (giả nhiễu nén). → (mask, matte, nền, frames, pos)."""
+    noise: nhiễu Gauss σ thêm riêng từng frame trên các hàng chứa ô (giả nhiễu nén); center: tâm watermark (ô có thể
+    lòi ra ngoài khung); stripes: α hình nét (sọc dọc 3 px) thay vì khối đều. → (mask, matte, nền, frames, pos)."""
     rng = np.random.default_rng(seed)
     mask = np.zeros((30, 60), np.uint8); mask[6:24, 8:52] = 255
     inside, _ = wm_matte.geometry(mask)
     ph, pw = inside.shape
     alpha = (inside * 0.3).astype(np.float32)
+    if stripes:
+        alpha[:, (np.arange(pw) // 3) % 2 == 1] = 0
     aW = alpha[..., None] * 230.0 * np.ones(3, np.float32)
     matte = {"alpha": alpha, "aW": aW, "edge": np.zeros(inside.shape, bool), "tpl": None, "inside": inside}
     bg = cv2.normalize(cv2.GaussianBlur(rng.integers(0, 256, (100, 160, 3)).astype(np.float32), (0, 0), 8),
                        None, 50, 200, cv2.NORM_MINMAX)
-    x0, y0 = wm_matte.corner(_C, mask.shape)
+    x0, y0 = wm_matte.corner(center, mask.shape)
+    ys, xs = slice(max(0, y0), min(100, y0 + ph)), slice(max(0, x0), min(160, x0 + pw))
+    a = alpha[ys.start - y0:ys.stop - y0, xs.start - x0:xs.stop - x0][..., None]
     frames = []
     for k in strengths:
         f = bg.copy()
-        f[y0:y0 + ph, x0:x0 + pw] = (1 - k * alpha[..., None]) * bg[y0:y0 + ph, x0:x0 + pw] + k * aW
-        f[y0:y0 + ph] += rng.normal(0, noise, f[y0:y0 + ph].shape) if noise else 0
+        f[ys, xs] = (1 - k * a) * bg[ys, xs] + k * a * 230.0
+        f[ys] += rng.normal(0, noise, f[ys].shape) if noise else 0
         frames.append(np.clip(np.round(f), 0, 255).astype(np.uint8))
-    return mask, matte, bg, frames, {i: _C for i in range(len(strengths))}
+    return mask, matte, bg, frames, {i: center for i in range(len(strengths))}
 
 
 def test_opacity_measures_watermark_strength():
@@ -381,7 +386,7 @@ def test_opacity_measures_watermark_strength():
     ph, pw = matte["inside"].shape
     x0, y0 = wm_matte.corner(_C, mask.shape)
     for f, want in zip(frames, (0.0, 0.5, 1.0)):
-        k = wm_matte.opacity(wm_matte.cut(f, x0, y0, ph, pw)[0], matte)
+        k = wm_matte.opacity(*wm_matte.cut(f, x0, y0, ph, pw), matte)
         assert abs(k - want) < 0.1, f"độ đậm thật {want}, đo {k:.2f}"
 
 
@@ -423,3 +428,38 @@ def test_stream_yields_every_frame_in_order():
             assert (f == frames[n]).all(), f"frame {n} ngoài track → giữ nguyên"
     short = list(wm_matte.stream(iter(enumerate(frames[:2])), pos, matte, mask.shape))
     assert [n for n, _ in short] == [0, 1], "ít frame hơn TEMPORAL_K vẫn ra đủ"
+
+
+def test_opacity_ignores_pixels_outside_frame():
+    # ô lòi 38% ra mép phải, cột mép khung rơi vào khe giữa 2 nét: điểm lặp ngoài khung là nền sạch → cách cũ đo 0,72
+    mask, matte, _, frames, _ = _stream_case([1.0], center=(153, 50), stripes=True)
+    ph, pw = matte["inside"].shape
+    x0, y0 = wm_matte.corner((153, 50), mask.shape)
+    k = wm_matte.opacity(*wm_matte.cut(frames[0], x0, y0, ph, pw), matte)
+    assert abs(k - 1.0) < 0.15, f"phần ngoài khung (lặp điểm mép) không được kéo độ đậm xuống: {k:.2f}"
+    assert wm_matte.opacity(*wm_matte.cut(frames[0], 500, 500, ph, pw), matte) == 1.0, "ô ngoài khung → giữ đảo"
+
+
+def test_stream_keeps_centre_frame_when_its_own_opacity_dips():
+    mask, matte, bg, frames, pos = _stream_case([1.0, 1.0, 1.0, 0.0, 1.0, 1.0, 1.0])
+    out = dict(wm_matte.stream(iter(enumerate(frames)), pos, matte, mask.shape))
+    one = wm_matte.apply(frames[3].copy(), pos[3], matte, mask.shape)
+    region = np.zeros(bg.shape[:2], bool)
+    x0, y0 = wm_matte.corner(_C, mask.shape)
+    region[y0:y0 + matte["inside"].shape[0], x0:x0 + matte["inside"].shape[1]] = matte["inside"] > 0
+    err = lambda x: np.abs(x.astype(np.float32) - bg)[region].mean()
+    assert err(out[3]) <= err(one) + 2, f"trung vị cao nhưng k riêng thấp: không được ra mảng đen ({err(out[3]):.1f} vs {err(one):.1f})"
+
+
+def test_stream_ignores_frames_without_position_and_consumer_edits():
+    """Frame ngoài track không vào trung bình (có thể còn watermark), và việc render sửa frame đã nhận
+    (xóa chữ OCR tại chỗ) không được ảnh hưởng frame ra sau."""
+    mask, matte, _, frames, pos = _stream_case([0.0] * 3 + [1.0] * 4 + [0.0] * 3)
+    part = {n: pos[n] for n in range(3, 7)}
+    clean = {n: f.copy() for n, f in wm_matte.stream(iter(enumerate(frames)), part, matte, mask.shape)}
+    edited = {}
+    for n, f in wm_matte.stream(iter(enumerate(frames)), part, matte, mask.shape):
+        edited[n] = f.copy()
+        f += 3                                                            # người dùng sửa tại chỗ
+    for n in range(3, 7):
+        assert (edited[n] == clean[n]).all(), f"frame {n} đổi theo việc sửa frame trước / dùng frame ngoài track"

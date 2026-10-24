@@ -300,18 +300,22 @@ def apply(frame, center, matte, mask_shape):
     return frame
 
 
-def opacity(patch, matte):
+def opacity(patch, valid, matte):
     """Độ đậm watermark trong ô so với lớp đã tách (1 = như ước lượng, 0 = không có): bình phương tối thiểu của
-    (ảnh − nền) theo (aW − α·nền), chỉ ở điểm α > 0,1. Nền = inpaint ô thu nhỏ 2 lần (nhanh ~3×, lệch ≤ 0,05;
-    thu 4 lần lệch thấp 0,1–0,2 đúng ở frame chữ hiện dần)."""
+    (ảnh − nền) theo (aW − α·nền), chỉ ở điểm α > 0,1 nằm trong khung (valid). Nền = Telea trên ô thu nhỏ 2 lần
+    (nhanh ~3×, lệch ≤ 0,05; thu 4 lần lệch thấp 0,1–0,2 đúng ở frame chữ hiện dần) — cố định Telea vì ngưỡng
+    K_ABSENT / K_FADE chấm trên Telea, không theo INPAINT_METHOD. Ô hầu như ngoài khung → 1 (đảo như thường)."""
+    s = (matte["alpha"] > 0.1) & (valid > 0)
+    if s.sum() < 0.1 * (matte["alpha"] > 0.1).sum():
+        return 1.0
     ph, pw = patch.shape[:2]
     sz = (max(1, pw // 2), max(1, ph // 2))
-    hole = (cv2.resize(matte["inside"].astype(np.float32), sz, interpolation=cv2.INTER_AREA) > 0).astype(np.uint8) * 255
-    b = cv2.resize(inpaint_roi(cv2.resize(patch, sz, interpolation=cv2.INTER_AREA), hole), (pw, ph),
-                   interpolation=cv2.INTER_LINEAR).astype(np.float32)
+    bad = np.maximum(matte["inside"] > 0, valid == 0).astype(np.float32)          # chỗ watermark + ngoài khung
+    hole = (cv2.resize(bad, sz, interpolation=cv2.INTER_AREA) > 0).astype(np.uint8) * 255
+    small = cv2.inpaint(cv2.resize(patch, sz, interpolation=cv2.INTER_AREA), hole, 4, cv2.INPAINT_TELEA)
+    b = cv2.resize(small, (pw, ph), interpolation=cv2.INTER_LINEAR).astype(np.float32)
     d = matte["aW"] - matte["alpha"][..., None] * b
     r = patch.astype(np.float32) - b
-    s = matte["alpha"] > 0.1
     return float((d[s] * r[s]).sum() / max(float((d[s] ** 2).sum()), 1e-6))
 
 
@@ -323,7 +327,8 @@ def stream(frames, pos, matte, mask_shape):
     """frames: lặp (số frame, ảnh gốc) liên tiếp → lặp (số frame, ảnh đã xóa watermark), cùng thứ tự, trễ TEMPORAL_K.
     Frame có vị trí trong pos: căn ô, đảo pha trộn, đo độ đậm. Frame t ra theo trung vị độ đậm của t ± K:
     < K_ABSENT → ảnh gốc; < K_FADE → inpaint ô; còn lại → ô của t = TB có trọng số các frame t ± K đã khôi phục cắt
-    tại ô của t (bỏ láng giềng đang mờ / không có watermark; điểm ngoài khung trọng số 0)."""
+    tại ô của t (luôn gồm chính t; bỏ láng giềng ngoài track hoặc đang mờ / không có watermark; điểm ngoài khung
+    trọng số 0). Frame đã trả ra có thể bị người nhận sửa tại chỗ: không frame nào sau đó dùng lại nó."""
     K, inside = TEMPORAL_K, matte["inside"]
     ph, pw = inside.shape
     keep = (inside > 0)[..., None]
@@ -346,24 +351,24 @@ def stream(frames, pos, matte, mask_shape):
         lref = _blur(ref)
         num, den = np.zeros((ph, pw, 3), np.float32), np.zeros((ph, pw), np.float32)
         for b in win:
-            if b[3] is not None and b[4] < K_FADE:
+            if b is not buf[i] and (b[3] is None or b[4] < K_FADE):
                 continue
             r, v = cut(b[2], x0, y0, ph, pw)
             w = np.exp(-((_blur(r) - lref) / TEMPORAL_DIFF) ** 2) * v
             num += w[..., None] * r
             den += w
-        avg = np.clip(np.round(num / np.maximum(den, 1e-6)[..., None]), 0, 255).astype(np.uint8)
+        avg = np.clip(np.round(num / np.maximum(den, 1e-3)[..., None]), 0, 255).astype(np.uint8)
         out = rest.copy()
-        _paste(out, np.where(keep & (den > 0)[..., None], avg, ref), x0, y0)
+        _paste(out, np.where(keep & (den > 1e-3)[..., None], avg, ref), x0, y0)
         return n, out
 
     for n, fr in frames:
         if n in pos:
             x0, y0 = _place(fr, pos[n], matte, mask_shape)
-            patch = cut(fr, x0, y0, ph, pw)[0]
+            patch, valid = cut(fr, x0, y0, ph, pw)
             rest = fr.copy()
             _paste(rest, invert(patch, matte["alpha"], matte["aW"], matte["edge"], inside), x0, y0)
-            buf.append([n, fr, rest, (x0, y0), opacity(patch, matte)])
+            buf.append([n, fr, rest, (x0, y0), opacity(patch, valid, matte)])
         else:
             buf.append([n, fr, fr, None, None])
         while len(buf) - 1 - nxt >= K:
