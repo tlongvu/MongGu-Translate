@@ -320,12 +320,9 @@ def _draw_subtitle_backgrounds(pil_img, jobs, font_path, line_spacing, min_size,
     return Image.alpha_composite(base, overlay).convert("RGB")
 
 
-def remove_wm(frame, center, mask, pad=10, matte=None):
-    """Xóa watermark chạy tại center. Có lớp watermark (wm_matte.load) → đảo pha trộn (khôi phục nền thật);
-    không thì đặt mask rồi inpaint theo INPAINT_METHOD. ROI rộng hơn mask `pad` px; sát / lố mép khung thì xén.
-    Sửa frame tại chỗ."""
-    if matte is not None:
-        return wm_matte.apply(frame, center, matte, mask.shape)
+def remove_wm(frame, center, mask, pad=10):
+    """Xóa watermark chạy tại center bằng inpaint (INPAINT_METHOD) — khi không có lớp watermark (xem wm_frames).
+    ROI rộng hơn mask `pad` px; sát / lố mép khung thì xén. Sửa frame tại chỗ."""
     mh, mw = mask.shape
     fh, fw = frame.shape[:2]
     x0, y0 = int(round(center[0] - mw / 2)), int(round(center[1] - mh / 2))
@@ -339,6 +336,28 @@ def remove_wm(frame, center, mask, pad=10, matte=None):
     roi_mask[my0 - ry0:my1 - ry0, mx0 - rx0:mx1 - rx0] = mask[my0 - y0:my1 - y0, mx0 - x0:mx1 - x0]
     frame[ry0:ry1, rx0:rx1] = inpaint_roi(frame[ry0:ry1, rx0:rx1], roi_mask)
     return frame
+
+
+def wm_frames(cap, start, end, wm_pos, wm_mask, matte):
+    """(số frame, ảnh) cho các frame [start, end) của cap, đã xóa watermark chạy. Có lớp watermark → wm_matte.stream
+    (đảo pha trộn + TB theo thời gian: đọc thêm TEMPORAL_K frame mỗi phía, không trả ra); không thì inpaint từng frame."""
+    k = wm_matte.TEMPORAL_K if matte is not None and wm_mask is not None else 0
+    first = max(0, start - k)
+    cap.set(cv2.CAP_PROP_POS_FRAMES, first)
+
+    def read():
+        for n in range(first, end + k):
+            ok, fr = cap.read()
+            if not ok:
+                return
+            yield n, fr
+
+    if k:
+        frames = wm_matte.stream(read(), wm_pos, matte, wm_mask.shape)
+    else:
+        frames = ((n, remove_wm(fr, wm_pos[n], wm_mask) if wm_mask is not None and n in wm_pos else fr)
+                  for n, fr in read())
+    return ((n, fr) for n, fr in frames if start <= n < end)
 
 
 def output_size(w: int, h: int) -> tuple:
@@ -799,7 +818,6 @@ def process_chunk(args):
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         raise RuntimeError(f"[Worker {chunk_idx}] Không mở được video: {video_path}")
-    cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
 
     # Nếu chạy 9:16 nền mờ, output resolution thay đổi; không thì phóng lên OUTPUT_HEIGHT (Full HD)
     out_w, out_h = (width, height) if TIKTOK_PASS_MODE else output_size(width, height)
@@ -855,12 +873,7 @@ def process_chunk(args):
     # Cache bbox thực tế gần nhất của từng text (cho Priority 2 gap-fill)
     text_last_seen = {}  # zh_text → entry dict (box, vi_text, ...)
 
-    for frame_num in range(start_frame, end_frame):
-        ret, frame = cap.read()
-        if not ret:
-            break
-        if wm_mask is not None and frame_num in wm_pos:     # watermark chạy (wm_track.py): xóa ở mọi frame
-            frame = remove_wm(frame, wm_pos[frame_num], wm_mask, matte=wm_matte_rec)
+    for frame_num, frame in wm_frames(cap, start_frame, end_frame, wm_pos, wm_mask, wm_matte_rec):
 
         # ── Priority 1: Actual keyframe (exact bbox, chính xác nhất) ──
         frame_str = str(frame_num)
@@ -1284,7 +1297,7 @@ if __name__ == "__main__":
     wm_pos, wm_mask = load_wm_track(job, ocr_data["total_frames"])
     wm_matte_rec = wm_matte.load(job.wm_matte, job.wm_track, wm_mask) if wm_mask is not None else None
     if wm_mask is not None:
-        how = "đảo pha trộn theo lớp watermark" if wm_matte_rec is not None else "inpaint"
+        how = "đảo pha trộn theo lớp watermark + TB theo thời gian" if wm_matte_rec is not None else "inpaint"
         print(f"  Watermark chạy : xóa ở {len(wm_pos)} frame ({how})")
 
     output_video = job.output

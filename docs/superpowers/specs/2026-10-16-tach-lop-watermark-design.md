@@ -142,11 +142,11 @@ Video gốc không còn trên máy → chạy `wm_matte.build` trực tiếp tr�
   - k ≈ 0–0,04: **không có watermark** (vị trí track còn giữ) → bản hiện tại trừ lớp vào nền sạch, **in ngược chữ tối** (lỗi thấy rõ);
   - k ≈ 0,4–0,7: watermark **hiện dần từng chữ** (粥 rõ, 咪咪 nhạt) → nhân hệ số k cho cả lớp không được, inpaint là an toàn;
   - k > 1,3: ước lượng k sai (nền inpaint kém, có chữ khác đè) nhưng đảo pha trộn vẫn xóa tốt → giữ đảo.
-- Nền inpaint cho k: Telea trên ô thu nhỏ 4 lần (1,1 ms) khớp nhóm với Telea cỡ thật (6,1 ms) ở 99,3% frame.
+- Nền inpaint cho k: Telea trên ô thu nhỏ 2 lần (~2 ms) lệch ≤ 0,05 so với Telea cỡ thật (6,1 ms) kể cả ở frame chữ hiện dần / vắng watermark; thu 4 lần (1,1 ms) khớp nhóm 99,3% frame ngẫu nhiên nhưng lệch thấp 0,1–0,2 đúng ở frame chữ hiện dần (k 0,39 → 0,20, rơi nhầm sang "không có watermark").
 
 ### 10.2 Thiết kế (`wm_matte.py`)
 
-- `opacity(patch, matte)` → k (nền inpaint ô thu nhỏ 4 lần, chỉ điểm α > 0,1).
+- `opacity(patch, matte)` → k (nền inpaint ô thu nhỏ 2 lần, chỉ điểm α > 0,1).
 - `stream(frames, pos, matte, mask_shape)`: nhận lặp (số frame, ảnh gốc) liên tiếp, trả lặp (số frame, ảnh đã xóa) cùng thứ tự, trễ `TEMPORAL_K` frame. Mỗi frame có vị trí: căn ±3 px, đảo pha trộn, đo k. Frame t ra theo trung vị k của t ± `TEMPORAL_K` (frame có vị trí):
   - k < `K_ABSENT` = 0,25 → trả ảnh gốc;
   - k < `K_FADE` = 0,7 → inpaint ô (trên ảnh gốc);

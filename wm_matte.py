@@ -30,6 +30,10 @@ OPAQUE = 0.9              # α ≥ 0,9: gần đục → inpaint sau khi đảo
 EDGE_FRAC = 0.5           # dải mép: gradient ảnh màu watermark ≥ 50% cực đại
 MIN_GAIN_DB = 1.0         # đảo pha trộn phải hơn inpaint ≥ 1 dB mới được dùng
 HOLDOUT = 0.2             # 20% cặp giữ riêng để chấm
+TEMPORAL_K = 3            # render: TB theo thời gian frame t ± 3 (khử nhiễu nén ở mép chữ)
+TEMPORAL_DIFF = 6.0       # thang sai khác (mức xám, ảnh mờ σ 2) của trọng số exp(−(Δ/6)²): nền tĩnh ≈ 1, vật động ≈ 0
+K_ABSENT = 0.25           # độ đậm (so với lớp đã tách, trung vị t ± K) < 0,25 → không có watermark: để nguyên
+K_FADE = 0.7              # < 0,7 → watermark đang hiện / tắt dần (từng chữ): inpaint
 
 
 def geometry(mask):
@@ -262,25 +266,112 @@ def load(path, track_path, mask):
     return m
 
 
-def apply(frame, center, matte, mask_shape):
-    """Xóa watermark ở frame (tâm center) bằng lớp đã tách: căn lại ±REFINE_R bằng tpl (nếu có), đảo pha trộn,
-    chỉ ghi phần ô nằm trong khung. Sửa frame tại chỗ."""
+def _place(frame, center, matte, mask_shape):
+    """Góc ô (x0, y0) của watermark ở frame: tâm track, căn lại ±REFINE_R bằng tpl (nếu có) — cửa sổ y hệt collect."""
     mh, mw = mask_shape
     ph, pw, R = mh + 2 * PAD, mw + 2 * PAD, REFINE_R
     c = np.asarray(center, np.float32)
     if matte.get("tpl") is not None:
         x0, y0 = corner(c, mask_shape)
-        o = np.array([x0 - R, y0 - R], np.float32)
         big, _ = cut(frame, x0 - R, y0 - R, ph + 2 * R, pw + 2 * R)
         c0 = np.array([R + PAD + mw / 2, R + PAD + mh / 2], np.float32)   # y hệt collect: cửa sổ ±R đối xứng
         q, sc = _local_match(cv2.cvtColor(big, cv2.COLOR_BGR2GRAY), c0, matte["tpl"], R)
         if sc >= MIN_SCORE:
-            c = q + o
-    x0, y0 = corner(c, mask_shape)
-    patch, _ = cut(frame, x0, y0, ph, pw)
-    out = invert(patch, matte["alpha"], matte["aW"], matte["edge"], matte["inside"])
+            c = q + np.array([x0 - R, y0 - R], np.float32)
+    return corner(c, mask_shape)
+
+
+def _paste(frame, out, x0, y0):
+    """Ghi ô out vào frame tại (x0, y0), chỉ phần nằm trong khung."""
+    ph, pw = out.shape[:2]
     fh, fw = frame.shape[:2]
     ys0, xs0, ys1, xs1 = max(0, y0), max(0, x0), min(fh, y0 + ph), min(fw, x0 + pw)
     if ys1 > ys0 and xs1 > xs0:
         frame[ys0:ys1, xs0:xs1] = out[ys0 - y0:ys1 - y0, xs0 - x0:xs1 - x0]
+
+
+def apply(frame, center, matte, mask_shape):
+    """Xóa watermark ở 1 frame (tâm center) bằng lớp đã tách: căn ô, đảo pha trộn, chỉ ghi phần ô nằm trong khung.
+    Sửa frame tại chỗ. Render dùng stream (thêm TB theo thời gian + bắt độ đậm)."""
+    x0, y0 = _place(frame, center, matte, mask_shape)
+    ph, pw = matte["inside"].shape
+    _paste(frame, invert(cut(frame, x0, y0, ph, pw)[0], matte["alpha"], matte["aW"], matte["edge"], matte["inside"]),
+           x0, y0)
     return frame
+
+
+def opacity(patch, matte):
+    """Độ đậm watermark trong ô so với lớp đã tách (1 = như ước lượng, 0 = không có): bình phương tối thiểu của
+    (ảnh − nền) theo (aW − α·nền), chỉ ở điểm α > 0,1. Nền = inpaint ô thu nhỏ 2 lần (nhanh ~3×, lệch ≤ 0,05;
+    thu 4 lần lệch thấp 0,1–0,2 đúng ở frame chữ hiện dần)."""
+    ph, pw = patch.shape[:2]
+    sz = (max(1, pw // 2), max(1, ph // 2))
+    hole = (cv2.resize(matte["inside"].astype(np.float32), sz, interpolation=cv2.INTER_AREA) > 0).astype(np.uint8) * 255
+    b = cv2.resize(inpaint_roi(cv2.resize(patch, sz, interpolation=cv2.INTER_AREA), hole), (pw, ph),
+                   interpolation=cv2.INTER_LINEAR).astype(np.float32)
+    d = matte["aW"] - matte["alpha"][..., None] * b
+    r = patch.astype(np.float32) - b
+    s = matte["alpha"] > 0.1
+    return float((d[s] * r[s]).sum() / max(float((d[s] ** 2).sum()), 1e-6))
+
+
+def _blur(x):
+    return cv2.GaussianBlur(cv2.cvtColor(x, cv2.COLOR_BGR2GRAY).astype(np.float32), (0, 0), 2.0)
+
+
+def stream(frames, pos, matte, mask_shape):
+    """frames: lặp (số frame, ảnh gốc) liên tiếp → lặp (số frame, ảnh đã xóa watermark), cùng thứ tự, trễ TEMPORAL_K.
+    Frame có vị trí trong pos: căn ô, đảo pha trộn, đo độ đậm. Frame t ra theo trung vị độ đậm của t ± K:
+    < K_ABSENT → ảnh gốc; < K_FADE → inpaint ô; còn lại → ô của t = TB có trọng số các frame t ± K đã khôi phục cắt
+    tại ô của t (bỏ láng giềng đang mờ / không có watermark; điểm ngoài khung trọng số 0)."""
+    K, inside = TEMPORAL_K, matte["inside"]
+    ph, pw = inside.shape
+    keep = (inside > 0)[..., None]
+    buf, nxt = [], 0          # [số frame, ảnh gốc, ảnh đã đảo, (x0, y0) | None, độ đậm | None]
+
+    def emit(i):
+        n, orig, rest, xy, _ = buf[i]
+        if xy is None:
+            return n, orig
+        win = buf[max(0, i - K):i + K + 1]
+        k = float(np.median([b[4] for b in win if b[3] is not None]))
+        if k < K_ABSENT:
+            return n, orig
+        x0, y0 = xy
+        if k < K_FADE:
+            out = orig.copy()
+            _paste(out, inpaint_roi(cut(orig, x0, y0, ph, pw)[0], inside * 255), x0, y0)
+            return n, out
+        ref = cut(rest, x0, y0, ph, pw)[0]
+        lref = _blur(ref)
+        num, den = np.zeros((ph, pw, 3), np.float32), np.zeros((ph, pw), np.float32)
+        for b in win:
+            if b[3] is not None and b[4] < K_FADE:
+                continue
+            r, v = cut(b[2], x0, y0, ph, pw)
+            w = np.exp(-((_blur(r) - lref) / TEMPORAL_DIFF) ** 2) * v
+            num += w[..., None] * r
+            den += w
+        avg = np.clip(np.round(num / np.maximum(den, 1e-6)[..., None]), 0, 255).astype(np.uint8)
+        out = rest.copy()
+        _paste(out, np.where(keep & (den > 0)[..., None], avg, ref), x0, y0)
+        return n, out
+
+    for n, fr in frames:
+        if n in pos:
+            x0, y0 = _place(fr, pos[n], matte, mask_shape)
+            patch = cut(fr, x0, y0, ph, pw)[0]
+            rest = fr.copy()
+            _paste(rest, invert(patch, matte["alpha"], matte["aW"], matte["edge"], inside), x0, y0)
+            buf.append([n, fr, rest, (x0, y0), opacity(patch, matte)])
+        else:
+            buf.append([n, fr, fr, None, None])
+        while len(buf) - 1 - nxt >= K:
+            yield emit(nxt)
+            nxt += 1
+            if nxt > K:
+                buf.pop(0)
+                nxt -= 1
+    while nxt < len(buf):
+        yield emit(nxt)
+        nxt += 1

@@ -269,16 +269,34 @@ def test_apply_inverts_inside_frame_and_leaves_rest_untouched():
     assert np.abs(out[ins].astype(np.float32) - bg[ins]).max() <= 2.0, "phần ô trong khung: khôi phục nền"
 
 
-def test_remove_wm_uses_matte_when_given():
+class _Cap:
+    """Giả cv2.VideoCapture trên danh sách frame trong RAM (set vị trí + read tuần tự)."""
+
+    def __init__(self, frames):
+        self.frames, self.i = frames, 0
+
+    def set(self, prop, value):
+        self.i = int(value)
+
+    def read(self):
+        if self.i >= len(self.frames):
+            return False, None
+        self.i += 1
+        return True, self.frames[self.i - 1].copy()
+
+
+def test_wm_frames_reads_margin_and_matches_stream():
     import script as s
-    mask, matte, bg, frame, _, ins = _matte_and_frame((40, 30))
-    a = s.remove_wm(frame.copy(), (40, 30), mask, matte=matte)
-    b = wm_matte.apply(frame.copy(), (40, 30), matte, mask.shape)
-    assert (a == b).all()
-    c = s.remove_wm(frame.copy(), (40, 30), mask)
-    assert not (c == a).all(), "không có lớp → inpaint như cũ"
-    err = lambda x: np.abs(x.astype(np.float32) - bg)[ins].mean()
-    assert err(a) < err(c), "có lớp → gần nền thật hơn inpaint"
+    mask, matte, _, frames, pos = _stream_case([1.0] * 9, noise=6.0)
+    full = dict(wm_matte.stream(iter(enumerate(frames)), pos, matte, mask.shape))
+    for start, end in [(2, 5), (0, 3), (6, 9)]:                          # giữa, sát đầu, sát cuối video
+        got = list(s.wm_frames(_Cap(frames), start, end, pos, mask, matte))
+        assert [n for n, _ in got] == list(range(start, end))
+        for n, fr in got:
+            assert (fr == full[n]).all(), f"chunk [{start}, {end}) frame {n}: phải như luồng cả video (đọc lề ±K)"
+    got = list(s.wm_frames(_Cap(frames), 2, 5, pos, mask, None))
+    for n, fr in got:
+        assert (fr == s.remove_wm(frames[n].copy(), pos[n], mask)).all(), "không có lớp → inpaint từng frame như cũ"
 
 
 def test_job_has_wm_matte_path():
@@ -329,3 +347,79 @@ def test_apply_realigns_template_within_refine_radius_on_odd_mask():
             out = wm_matte.apply(frame.copy(), (true_c[0] + dx, true_c[1] + dy), matte, mask.shape)
             d = np.abs(out[area].astype(np.float32) - ref[area]).max()
             assert d <= 2.0, f"track lệch ({dx:+d}, {dy:+d}) px không căn lại đúng ô: sai {d}"
+
+
+# ── Luồng render: trung bình theo thời gian + bắt độ đậm (spec mục 10) ──
+
+_C = (80, 50)
+
+
+def _stream_case(strengths, noise=0.0, seed=0):
+    """Nền tĩnh 100×160; watermark α = 0,3 (màu 230) trên mask 30×60 (cỡ gần thật) đứng yên tâm (80, 50), độ đậm frame i = strengths[i];
+    noise: nhiễu Gauss σ thêm riêng từng frame trên các hàng chứa ô (giả nhiễu nén). → (mask, matte, nền, frames, pos)."""
+    rng = np.random.default_rng(seed)
+    mask = np.zeros((30, 60), np.uint8); mask[6:24, 8:52] = 255
+    inside, _ = wm_matte.geometry(mask)
+    ph, pw = inside.shape
+    alpha = (inside * 0.3).astype(np.float32)
+    aW = alpha[..., None] * 230.0 * np.ones(3, np.float32)
+    matte = {"alpha": alpha, "aW": aW, "edge": np.zeros(inside.shape, bool), "tpl": None, "inside": inside}
+    bg = cv2.normalize(cv2.GaussianBlur(rng.integers(0, 256, (100, 160, 3)).astype(np.float32), (0, 0), 8),
+                       None, 50, 200, cv2.NORM_MINMAX)
+    x0, y0 = wm_matte.corner(_C, mask.shape)
+    frames = []
+    for k in strengths:
+        f = bg.copy()
+        f[y0:y0 + ph, x0:x0 + pw] = (1 - k * alpha[..., None]) * bg[y0:y0 + ph, x0:x0 + pw] + k * aW
+        f[y0:y0 + ph] += rng.normal(0, noise, f[y0:y0 + ph].shape) if noise else 0
+        frames.append(np.clip(np.round(f), 0, 255).astype(np.uint8))
+    return mask, matte, bg, frames, {i: _C for i in range(len(strengths))}
+
+
+def test_opacity_measures_watermark_strength():
+    mask, matte, _, frames, _ = _stream_case([0.0, 0.5, 1.0])
+    ph, pw = matte["inside"].shape
+    x0, y0 = wm_matte.corner(_C, mask.shape)
+    for f, want in zip(frames, (0.0, 0.5, 1.0)):
+        k = wm_matte.opacity(wm_matte.cut(f, x0, y0, ph, pw)[0], matte)
+        assert abs(k - want) < 0.1, f"độ đậm thật {want}, đo {k:.2f}"
+
+
+def test_stream_averages_per_frame_noise():
+    mask, matte, bg, frames, pos = _stream_case([1.0] * 9, noise=6.0)
+    out = list(wm_matte.stream(iter(enumerate(frames)), pos, matte, mask.shape))
+    assert [n for n, _ in out] == list(range(9))
+    one = wm_matte.apply(frames[4].copy(), pos[4], matte, mask.shape)
+    region = np.zeros(bg.shape[:2], bool)
+    x0, y0 = wm_matte.corner(_C, mask.shape)
+    region[y0:y0 + matte["inside"].shape[0], x0:x0 + matte["inside"].shape[1]] = matte["inside"] > 0
+    err = lambda x: np.abs(x.astype(np.float32) - bg)[region].mean()
+    assert err(out[4][1]) < 0.6 * err(one), f"TB theo thời gian phải khử nhiễu: {err(out[4][1]):.2f} vs {err(one):.2f}"
+
+
+def test_stream_leaves_frames_without_watermark_untouched():
+    mask, matte, _, frames, pos = _stream_case([0.0] * 7)
+    for n, f in wm_matte.stream(iter(enumerate(frames)), pos, matte, mask.shape):
+        assert (f == frames[n]).all(), f"frame {n} không có watermark → giữ nguyên (không in ngược chữ)"
+
+
+def test_stream_inpaints_faint_watermark():
+    mask, matte, _, frames, pos = _stream_case([0.5] * 7)
+    out = dict(wm_matte.stream(iter(enumerate(frames)), pos, matte, mask.shape))
+    ph, pw = matte["inside"].shape
+    x0, y0 = wm_matte.corner(_C, mask.shape)
+    want = frames[3].copy()
+    want[y0:y0 + ph, x0:x0 + pw] = utils.inpaint_roi(want[y0:y0 + ph, x0:x0 + pw], matte["inside"] * 255)
+    assert (out[3] == want).all(), "watermark nhạt (đang hiện dần) → inpaint ô thay vì đảo pha trộn"
+
+
+def test_stream_yields_every_frame_in_order():
+    mask, matte, _, frames, pos = _stream_case([1.0] * 10)
+    part = {n: pos[n] for n in range(3, 7)}
+    out = list(wm_matte.stream(iter(enumerate(frames)), part, matte, mask.shape))
+    assert [n for n, _ in out] == list(range(10))
+    for n, f in out:
+        if n not in part:
+            assert (f == frames[n]).all(), f"frame {n} ngoài track → giữ nguyên"
+    short = list(wm_matte.stream(iter(enumerate(frames[:2])), pos, matte, mask.shape))
+    assert [n for n, _ in short] == [0, 1], "ít frame hơn TEMPORAL_K vẫn ra đủ"
