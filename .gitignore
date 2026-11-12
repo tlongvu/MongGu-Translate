@@ -26,4 +26,5 @@ debug_*.txt
 .claude/*.lock
 cache/
 jobs/
+series/
 .env

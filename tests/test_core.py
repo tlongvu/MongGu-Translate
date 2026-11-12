@@ -133,6 +133,46 @@ def test_segment_index_trim_never_widens():
     assert '丙' not in [e['text'] for e in idx.get(11, [])]
 
 
+
+def test_segment_index_widens_partial_ocr_read_to_full_text():
+    # OCR đọc thiếu chữ đầu nhiều frame liền (「中校长）」 thay vì 「（一中校长）」) → khung hẹp, sót nét
+    # chữ đứng yên: mép phải trùng khung đọc đủ → nới sang trái bằng bề rộng đủ
+    part = [{'frame': f, 'bbox': [604, 504, 702, 542]} for f in range(0, 40, 4)]
+    full = [{'frame': f, 'bbox': [566, 502, 702, 544]} for f in range(40, 80, 4)]
+    seg = {'text': '（一中校长）', 'start_frame': 0, 'end_frame': 76, 'bbox': [566, 502, 702, 544],
+           'keyframe_bboxes': part + full}
+    idx = s._build_segment_index([seg], 0, 80, {}, ocr_interval_frames=1)
+    assert idx[10][0]['x'] == 566 and idx[10][0]['box_width'] == 136
+    assert idx[10][0]['y'] == 504, "chỉ nới ngang, giữ chiều cao của frame đó"
+    assert idx[60][0]['x'] == 566
+
+
+def test_segment_index_keeps_moving_text_box():
+    # chữ chạy ngang (bình luận lướt qua): khung hẹp lúc mới vào khung hình, không mép nào trùng khung đủ → giữ nguyên
+    kb = [{'frame': f, 'bbox': [700 - 20 * f, 100, min(768, 700 - 20 * f + 40 + 10 * f), 140]} for f in range(0, 30, 3)]
+    seg = {'text': '弹幕）所以他们直接开大巴', 'start_frame': 0, 'end_frame': 27, 'bbox': [100, 100, 768, 140],
+           'keyframe_bboxes': kb}
+    idx = s._build_segment_index([seg], 0, 30, {}, ocr_interval_frames=1)
+    for f in (0, 3, 9):
+        b = s.interpolate_bbox(kb, f)
+        assert idx[f][0]['x'] == int(b[0]) and idx[f][0]['box_width'] == max(int(b[2] - b[0]), 10)
+
+
+def test_hold_texts_keeps_text_while_image_unchanged():
+    # OCR "rơi" (không đọc ra nữa) mà chữ vẫn đứng yên → giữ xóa + vẽ; ảnh vùng chữ đổi (chữ tắt) → thôi
+    rng = np.random.default_rng(0)
+    img = rng.integers(0, 256, (120, 200)).astype(np.float32)
+    e = {'seg': 7, 'text': '十三中', 'vi_text': 'Trường số 13', 'x': 50, 'y': 40, 'box_width': 60, 'box_height': 24,
+         'box': [[50, 40], [110, 40], [110, 64], [50, 64]]}
+    held = {}
+    assert s.hold_texts(img, 0, [e], held) == []                 # còn đọc được → không cần giữ
+    assert s.hold_texts(img + 3, 1, [], held) == [e], "rơi OCR, ảnh gần như y hệt → giữ"
+    gone = img.copy(); gone[40:64, 50:110] = 128                  # chữ biến mất
+    assert s.hold_texts(gone, 2, [], held) == [] and 7 not in held
+    held = {}
+    s.hold_texts(img, 0, [e], held)
+    assert s.hold_texts(img, s.TEXT_HOLD_FRAMES + 1, [], held) == [], "giữ tối đa TEXT_HOLD_FRAMES"
+
 # ── Wrap & chiều cao ──
 
 def test_wrap_and_height():

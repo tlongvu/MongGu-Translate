@@ -678,6 +678,59 @@ def merge_nearby_detections(detections, y_threshold=5, x_gap_threshold=80):
 # WORKER FUNCTION (Render pass - no OCR, no API)
 # ──────────────────────────────────────────────
 
+def _full_box(keyframe_bboxes: list):
+    """Khung đọc đủ chữ của 1 đoạn: trung vị các khung OCR rộng ≥ 90% bề rộng p90. OCR hay đọc thiếu chữ đầu / cuối
+    nhiều frame liền (「中校长）」 thay vì 「（一中校长）」) → khung hẹp. → [x1, y1, x2, y2] hoặc None."""
+    if len(keyframe_bboxes) < 2:
+        return None
+    w = np.array([k['bbox'][2] - k['bbox'][0] for k in keyframe_bboxes])
+    return np.median([k['bbox'] for k in keyframe_bboxes
+                      if k['bbox'][2] - k['bbox'][0] >= 0.9 * np.percentile(w, 90)], axis=0)
+
+
+def _widen_to_full(bbox, full):
+    """Khung đọc thiếu chữ → nới ngang bằng khung đủ, về phía mép không trùng (chữ đứng yên: mép kia trùng khung đủ).
+    Chữ đang chạy (không mép nào trùng) / khác cỡ chữ → giữ nguyên."""
+    if full is None:
+        return bbox
+    x1, y1, x2, y2 = bbox
+    fw, tol = full[2] - full[0], 0.3 * (full[3] - full[1])
+    if x2 - x1 >= 0.9 * fw or abs((y2 - y1) - (full[3] - full[1])) > tol:
+        return bbox
+    if abs(x2 - full[2]) <= tol:
+        return [max(0.0, x2 - fw), y1, x2, y2]
+    if abs(x1 - full[0]) <= tol:
+        return [x1, y1, x1 + fw, y2]
+    return bbox
+
+
+TEXT_HOLD_FRAMES = 75     # OCR "rơi" (không đọc ra nữa) mà chữ còn đứng yên → giữ xóa + vẽ tối đa 3 s
+TEXT_HOLD_DIFF = 10.0     # sai khác TB (mức xám) vùng chữ so với lúc đọc được lần cuối; chữ tắt / cảnh đổi → vượt xa
+
+
+def hold_texts(gray, frame_num: int, entries: list, held: dict) -> list:
+    """Đoạn chữ vừa hết mà vùng ảnh chưa đổi (OCR bỏ sót, chữ vẫn còn) → trả các entry cần xóa + vẽ tiếp ở frame này.
+    gray: ảnh xám float32 của frame (trước khi xóa chữ); entries: đoạn chữ của frame (segment index, có 'seg');
+    held: trạng thái giữa các frame {seg: (entry, vùng chữ lúc thấy cuối, frame)}."""
+    def crop(e):
+        x, y = max(0, e['x']), max(0, e['y'])
+        return gray[y:y + e['box_height'], x:x + e['box_width']]
+    for e in entries:
+        held[e['seg']] = (e, crop(e).copy(), frame_num)
+    seen = {e['seg'] for e in entries}
+    out = []
+    for k, (e, ref, f0) in list(held.items()):
+        if k in seen:
+            continue
+        cur = crop(e)
+        if (frame_num - f0 > TEXT_HOLD_FRAMES or cur.shape != ref.shape or not ref.size
+                or float(np.abs(cur - ref).mean()) > TEXT_HOLD_DIFF):
+            del held[k]
+        else:
+            out.append(e)
+    return out
+
+
 def _build_segment_index(text_segments: list, start_frame: int, end_frame: int,
                           translation_map: dict, extend_frames: int = 5,
                           ocr_interval_frames: int = 0, vi_for_seg: dict = None) -> dict:
@@ -748,10 +801,11 @@ def _build_segment_index(text_segments: list, start_frame: int, end_frame: int,
         # Bản dịch theo TỪNG LẦN XUẤT HIỆN (id segment); không có id → tra theo chữ (tương thích)
         vi_text = (vi_for_seg or {}).get(seg.get('id'), translation_map.get(zh_text, ""))
         keyframe_bboxes = seg.get('keyframe_bboxes', [])
+        full = _full_box(keyframe_bboxes)
 
         for fn in range(max(sf, start_frame), min(ef + 1, end_frame)):
             if keyframe_bboxes:
-                bbox = interpolate_bbox(keyframe_bboxes, fn)
+                bbox = _widen_to_full(interpolate_bbox(keyframe_bboxes, fn), full)
             else:
                 bbox = seg['bbox']
 
@@ -767,6 +821,7 @@ def _build_segment_index(text_segments: list, start_frame: int, end_frame: int,
                 'y': int(y1),
                 'box_height': box_height,
                 'box_width': box_width,
+                'seg': seg.get('id', id(seg)),
             }
             index.setdefault(fn, []).append(entry)
 
@@ -858,8 +913,9 @@ def process_chunk(args):
     # Đây là lookup chính xác: biết frame nào cần inpaint vùng nào.
     # Truyền ocr_interval_frames để extend ngược về trước 1 OCR interval,
     # tránh text Trung nhấp nháy trước khi inpaint kịp bắt đầu.
+    warm = max(0, start_frame - TEXT_HOLD_FRAMES)       # đọc lướt trước chunk để giữ chữ vắt qua ranh giới chunk
     segment_index = _build_segment_index(
-        text_segments_for_chunk, start_frame, end_frame, translation_map,
+        text_segments_for_chunk, warm, end_frame, translation_map,
         ocr_interval_frames=ocr_interval_frames, vi_for_seg=vi_for_seg,
     )
 
@@ -872,6 +928,13 @@ def process_chunk(args):
 
     # Cache bbox thực tế gần nhất của từng text (cho Priority 2 gap-fill)
     text_last_seen = {}  # zh_text → entry dict (box, vi_text, ...)
+    held = {}            # đoạn chữ OCR vừa rơi mà ảnh chưa đổi (hold_texts)
+    cap.set(cv2.CAP_PROP_POS_FRAMES, warm)
+    for fn in range(warm, start_frame):
+        ok, fr = cap.read()
+        if not ok:
+            break
+        hold_texts(cv2.cvtColor(fr, cv2.COLOR_BGR2GRAY).astype(np.float32), fn, segment_index.get(fn, []), held)
 
     for frame_num, frame in wm_frames(cap, start_frame, end_frame, wm_pos, wm_mask, wm_matte_rec):
 
@@ -946,6 +1009,12 @@ def process_chunk(args):
                         'x': x, 'y': y, 'box_height': box_height,
                         'box_width': box_width,
                     })
+
+        # ── Priority 4: đoạn chữ OCR vừa bỏ sót mà vùng ảnh còn y hệt (chữ vẫn trên màn hình) ──
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY).astype(np.float32)
+        for e in hold_texts(gray, frame_num, segment_detections, held):
+            if not any(entries_overlap(e, d) for d in cached_detections):
+                cached_detections.append(e)
 
         # Inpaint + draw
         if cached_detections:
@@ -1330,10 +1399,10 @@ if __name__ == "__main__":
                 chunk_det[frame_str] = dets
         chunk_detections.append(chunk_det)
 
-        # Split text_segments: giữ các segment có giao với chunk
+        # Split text_segments: giữ các segment có giao với chunk (+ vừa hết ngay trước chunk: hold_texts giữ tiếp)
         chunk_seg = [
             seg for seg in text_segments
-            if seg['end_frame'] >= start and seg['start_frame'] < end
+            if seg['end_frame'] >= start - TEXT_HOLD_FRAMES and seg['start_frame'] < end
         ]
         chunk_segments.append(chunk_seg)
 
